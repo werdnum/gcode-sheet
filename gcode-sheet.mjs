@@ -162,6 +162,53 @@ function parseFastFloat(str, start, end) {
   return sign * (intPart + (fracLen > 0 ? fracPart * POW10[fracLen] : 0));
 }
 
+// Visit slices of one bounded read buffer at a time. Returning false stops early.
+function visitGcodeLines(file, visit) {
+  const fd = fs.openSync(file, 'r');
+  const readBuf = Buffer.allocUnsafe(256 * 1024);
+  let leftover = '';
+  try {
+    let bytesRead;
+    while ((bytesRead = fs.readSync(fd, readBuf, 0, readBuf.length, null)) > 0) {
+      const chunk = leftover + readBuf.toString('latin1', 0, bytesRead);
+      let start = 0;
+      let nl = chunk.indexOf('\n');
+      while (nl !== -1) {
+        let end = nl;
+        if (end > start && chunk.charCodeAt(end - 1) === 13) end--;
+        if (visit(chunk, start, end) === false) return;
+        start = nl + 1;
+        nl = chunk.indexOf('\n', start);
+      }
+      leftover = chunk.slice(start);
+    }
+    if (leftover.length) visit(leftover, 0, leftover.length);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function isLayerMarker(str, start, end) {
+  return (str.startsWith(';LAYER_CHANGE', start) &&
+      str.slice(start + 13, end).trim() === '') ||
+    (str.startsWith(';LAYER:', start) &&
+      /^\d+\s*$/.test(str.slice(start + 7, end)));
+}
+
+// A short preflight normally stops at the first layer. Markerless files need a
+// full streaming scan so their extrusion is never mistaken for a startup purge.
+function hasLayerMarkers(file) {
+  let found = false;
+  visitGcodeLines(file, (str, start, end) => {
+    while (start < end && str.charCodeAt(start) <= 32) start++;
+    if (isLayerMarker(str, start, end)) {
+      found = true;
+      return false;
+    }
+  });
+  return found;
+}
+
 class ToolChunkBuilder {
   constructor(tool, material, isLines, uploadChunk) {
     this.tool = tool;
@@ -697,11 +744,12 @@ async function main() {
     let stateX = 0, stateY = 0, stateZ = 0, stateE = 0;
     let shiftX = 0, shiftY = 0, shiftZ = 0;
     let relE = false;
-    let units = 'mm';
+    let relXYZ = false;
+    let unitScale = 1;
     let tool = 0;
     let extWidth = defaultWidth;
     let lineHeight = defaultHeight;
-    let inStart = !values['include-start'];
+    let inStart = !values['include-start'] && hasLayerMarkers(gcodePath);
     let inInterior = false;
     let inWipeTower = false;
     let layer = 0;
@@ -812,13 +860,14 @@ async function main() {
       if (rVal === rVal && rVal !== 0) {
         const D = tx - sx, Y = ty - sy;
         const A = Math.sqrt((D * D + Y * Y) * 0.25);
-        const rad = Math.max(rVal, A);
+        const rad = Math.max(Math.abs(rVal), A);
         const C = D * D + Y * Y;
         const T = rad * rad - C * 0.25;
         if (C === 0) u = true;
         else {
           let F = Math.sqrt(Math.max(0, T / C));
           if (!cw) F = -F;
+          if (rVal < 0) F = -F;
           r = D * 0.5 + Y * F;
           a = Y * 0.5 - D * F;
         }
@@ -834,8 +883,7 @@ async function main() {
         x = cw ? y - b : b - y;
         if (x < 0) x += 2 * Math.PI;
       }
-      const M = units === 'in' ? g * 25.4 : g;
-      const S = 2 * Math.acos(Math.max(1 - arcTol / M, -1));
+      const S = 2 * Math.acos(Math.max(1 - arcTol / g, -1));
       const w = Math.min(S, MAX_ARC_ANGLE);
       let steps = x / w;
       if (steps < 1) steps = 1;
@@ -853,12 +901,14 @@ async function main() {
     };
 
     const parseLineSlice = (str, start, end) => {
+      while (start < end && str.charCodeAt(start) <= 32) start++;
       if (start >= end) return;
       const c0 = str.charCodeAt(start);
 
       if (c0 === 59) {
         const len = end - start;
-        if (len >= 13 && str.startsWith(';LAYER_CHANGE', start)) {
+        if (isLayerMarker(str, start, end)) {
+          finishExtrusionPath();
           inStart = false;
           inWipeTower = false;
           layer++;
@@ -942,18 +992,19 @@ async function main() {
           }
         }
 
-        if (inStart || inInterior) pe = NaN;
-
-        if (px !== px && py !== py && pz !== pz) {
-          applyExtrusion(pe);
+        // Keep machine/extruder state even when the path is hidden.
+        const dE = applyExtrusion(pe * unitScale);
+        const isArc = cmdNum === 2 || cmdNum === 3;
+        const hasArc = isArc && (pi === pi || pj === pj || pr === pr);
+        if (px !== px && py !== py && pz !== pz && !hasArc) {
+          finishExtrusionPath();
           return;
         }
 
-        const nx = px !== px ? stateX : px + shiftX;
-        const ny = py !== py ? stateY : py + shiftY;
-        const nz = pz !== pz ? stateZ : pz + shiftZ;
-        const dE = applyExtrusion(pe);
-        const isExt = dE > 0;
+        const nx = px !== px ? stateX : px * unitScale + (relXYZ ? stateX : shiftX);
+        const ny = py !== py ? stateY : py * unitScale + (relXYZ ? stateY : shiftY);
+        const nz = pz !== pz ? stateZ : pz * unitScale + (relXYZ ? stateZ : shiftZ);
+        const isExt = dE > 0 && !inStart && !inInterior;
 
         if (cmdNum === 0 || cmdNum === 1) {
           if (isExt) {
@@ -967,7 +1018,7 @@ async function main() {
         } else {
           if (isExt) {
             ensureExtrusionPath();
-            tessellateArc(cmdNum === 2, nx, ny, nz, pi, pj, pr);
+            tessellateArc(cmdNum === 2, nx, ny, nz, pi * unitScale, pj * unitScale, pr * unitScale);
             stateX = nx; stateY = ny; stateZ = nz;
           } else {
             finishExtrusionPath();
@@ -1009,8 +1060,10 @@ async function main() {
       }
 
       if (firstChar === 103) {
-        if (cmdNum === 20) units = 'in';
-        else if (cmdNum === 21) units = 'mm';
+        if (cmdNum === 20) unitScale = 25.4;
+        else if (cmdNum === 21) unitScale = 1;
+        else if (cmdNum === 90) relXYZ = false;
+        else if (cmdNum === 91) relXYZ = true;
         else if (cmdNum === 28) {
           finishExtrusionPath();
           stateX = 0; stateY = 0; stateZ = 0;
@@ -1039,10 +1092,10 @@ async function main() {
           if (!anyParam) {
             shiftX = stateX; shiftY = stateY; shiftZ = stateZ; stateE = 0;
           } else {
-            if (px === px) shiftX = stateX - px;
-            if (py === py) shiftY = stateY - py;
-            if (pz === pz) shiftZ = stateZ - pz;
-            if (pe === pe) stateE = pe;
+            if (px === px) shiftX = stateX - px * unitScale;
+            if (py === py) shiftY = stateY - py * unitScale;
+            if (pz === pz) shiftZ = stateZ - pz * unitScale;
+            if (pe === pe) stateE = pe * unitScale;
           }
         } else if (cmdNum === 92.1) {
           shiftX = 0; shiftY = 0; shiftZ = 0;
@@ -1050,31 +1103,9 @@ async function main() {
       }
     };
 
-    const fd = fs.openSync(gcodePath, 'r');
-    const READ_SIZE = 256 * 1024;
-    const readBuf = Buffer.allocUnsafe(READ_SIZE);
-    let leftover = '';
     try {
-      let bytesRead = 0;
-      while ((bytesRead = fs.readSync(fd, readBuf, 0, READ_SIZE, null)) > 0) {
-        const chunkStr = leftover + readBuf.toString('latin1', 0, bytesRead);
-        let lineStart = 0;
-        let nlIdx = chunkStr.indexOf('\n', lineStart);
-        while (nlIdx !== -1) {
-          let lineEnd = nlIdx;
-          if (lineEnd > lineStart && chunkStr.charCodeAt(lineEnd - 1) === 13) lineEnd--;
-          parseLineSlice(chunkStr, lineStart, lineEnd);
-          lineStart = nlIdx + 1;
-          nlIdx = chunkStr.indexOf('\n', lineStart);
-        }
-        leftover = chunkStr.slice(lineStart);
-      }
-      if (leftover.length > 0) {
-        parseLineSlice(leftover, 0, leftover.length);
-        leftover = '';
-      }
+      visitGcodeLines(gcodePath, parseLineSlice);
     } finally {
-      fs.closeSync(fd);
       if (tmpDir) {
         try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
         tmpDir = null;

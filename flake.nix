@@ -119,6 +119,8 @@
             nativeBuildInputs = [ gcode-sheet pkgs.nodejs_24 ];
           } ''
             export HOME="$TMPDIR"
+            GCODE_SHEET_BIN="${gcode-sheet}/bin/gcode-sheet" \
+              node --test ${./test/parser.test.mjs}
             gcode-sheet "${fixture}" "$TMPDIR/caliper.png" > "$TMPDIR/summary.json"
             cat "$TMPDIR/summary.json"
 

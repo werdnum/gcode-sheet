@@ -21,7 +21,7 @@ nix run . -- caliper-battery-cover-flatbase-0.1mm-black-pla-slot3.bgcode out.png
 nix run . -- caliper-battery-cover-flatbase-0.1mm-black-pla-slot3.bgcode out-feature.png --color-by feature
 ```
 
- Run the flake test suite (renders the bundled caliper `.bgcode` fixture and verifies the PNG dimensions, pixel count, and JSON summary):
+Run the flake test suite (checks parser regressions through the CLI, then renders the bundled caliper `.bgcode` fixture and verifies the PNG dimensions, pixel count, and JSON summary):
 
 ```bash
 nix flake check -L
@@ -70,7 +70,7 @@ Usage: gcode-sheet INPUT.(gcode|bgcode) OUTPUT.png [options]
 | `--size N` | `800` | Panel width in pixels (each panel is `N` × `0.8*N`, so default 4-panel sheet is `1600×1280`) |
 | `--detail MODE` | `auto` | `full`, `shell` (hides interior perimeters/infill/gap-fill above layer 1), or `auto` (`shell` when decoded G-code > 9 MB) |
 | `--end-layer N` | *(all)* | Cut the 3D views at layer `N` (1-based) |
-| `--include-start` | `false` | Include extrusions before the first `;LAYER_CHANGE` (hides the start-gcode purge line by default) |
+| `--include-start` | `false` | Include extrusions before the first `;LAYER_CHANGE` or Cura `;LAYER:n` marker (hides the start-gcode purge line by default when markers exist; markerless files render all extrusions) |
 | `--include-wipe-tower` | `false` | Include `;TYPE:Wipe tower` in the camera bounding-box fit (excluded by default so the printed part fills the frame) |
 | `--light A,D,B` | `0.6,1.2,1.5` | Ambient, directional, and brightness multipliers for the tube shader |
 | `--background HEX` | `#DCDFE4` | Background colour |
@@ -80,6 +80,8 @@ Usage: gcode-sheet INPUT.(gcode|bgcode) OUTPUT.png [options]
 | `--lines` | `false` | Render flat `GL_LINES` segments instead of shaded 3D tubes |
 | `--no-labels` | `false` | Omit the built-in panel view badges and bottom-left colour legend overlay |
 | `-h`, `--help` | | Print CLI usage help |
+
+The parser supports absolute (`G90`) and relative (`G91`) XYZ moves, independent absolute/relative extrusion (`M82`/`M83`), `G92` offsets, and inch (`G20`) or millimetre (`G21`) coordinates. Arc coordinates, I/J offsets, signed R radii, and extrusion values are normalized to millimetres; a negative R selects the arc longer than 180 degrees.
 
 ### Feature Colour Groups (`--color-by feature`)
 
