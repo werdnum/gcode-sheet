@@ -65,7 +65,8 @@
             buildInputs = runtimeLibs;
 
             postInstall = ''
-              addonDir="$out/lib/node_modules/gcode-sheet/node_modules/native-gles/build/Release"
+              addonDir="$out/lib/node_modules/gcode-sheet/node_modules/native-gles/dist"
+              rm -rf "$addonDir"
               mkdir -p "$addonDir"
               tar -xzf "${glesTarball}" --no-same-owner -C "$addonDir"
               chmod +x "$out/lib/node_modules/gcode-sheet/gcode-sheet.mjs"
