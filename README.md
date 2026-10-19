@@ -21,7 +21,15 @@ nix run . -- caliper-battery-cover-flatbase-0.1mm-black-pla-slot3.bgcode out.png
 nix run . -- caliper-battery-cover-flatbase-0.1mm-black-pla-slot3.bgcode out-feature.png --color-by feature
 ```
 
-Run the flake test suite (checks parser regressions through the CLI, then renders the bundled caliper `.bgcode` fixture and verifies the PNG dimensions, pixel count, and JSON summary):
+An optional Bun package offers the same CLI and can be faster, with workload-dependent memory use. Node.js 24 remains the default:
+
+```bash
+nix run .#bun -- part.bgcode out.png
+# From GitHub:
+nix run github:werdnum/gcode-sheet#bun -- part.bgcode out.png
+```
+
+Run the flake test suite (checks parser regressions and the caliper `.bgcode` fixture under both runtimes, verifies the PNG dimensions, pixel count, and JSON summary, and compares decoded pixels and summaries between runtimes):
 
 ```bash
 nix flake check -L
@@ -110,7 +118,13 @@ The `bench/` directory contains scripts to reproducibly generate medium (~11.2 M
 
 # Run the benchmark suite and print the Markdown table
 ./bench/run.sh
+
+# Compare a package on your own inputs (full and shell; median of 5 runs)
+GCODE_SHEET_BIN="$(nix build .#bun --no-link --print-out-paths)/bin/gcode-sheet" \
+  BENCH_REPEATS=5 ./bench/run.sh part.gcode another.bgcode
 ```
+
+See [runtime and PNG encoding measurements](docs/performance.md) for comparisons with Node 26 and Bun, methodology, and the tradeoffs behind the current defaults.
 
 ### Before vs. After Performance (`x86_64-linux`, Mesa `llvmpipe`)
 
