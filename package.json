@@ -1,0 +1,15 @@
+{
+  "name": "gcode-sheet",
+  "version": "1.0.0",
+  "description": "Headless G-code/bgcode toolpath contact-sheet renderer",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "gcode-sheet": "./gcode-sheet.mjs"
+  },
+  "dependencies": {
+    "pngjs": "7.0.0",
+    "three": "0.184.0",
+    "webgl-node": "1.6.1"
+  }
+}
