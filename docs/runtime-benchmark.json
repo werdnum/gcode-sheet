@@ -17,7 +17,8 @@
   "runtime_versions": {
     "node24": "24.19.0",
     "node26": "26.12.0",
-    "bun": "1.4.2"
+    "bun": "1.4.2",
+    "bun_artifact": "bun-linux-x64-baseline (same upstream artifact as the pinned Nix package)"
   },
   "cases": [
     {
@@ -29,24 +30,24 @@
         "before-node24": {
           "samples": [
             {
-              "wall_seconds": 0.430993,
-              "peak_rss_mib": 141.406
+              "wall_seconds": 0.475473,
+              "peak_rss_mib": 139.719
             },
             {
-              "wall_seconds": 0.390631,
-              "peak_rss_mib": 140.57
+              "wall_seconds": 0.417282,
+              "peak_rss_mib": 140.922
             },
             {
-              "wall_seconds": 0.4273,
-              "peak_rss_mib": 139.922
+              "wall_seconds": 0.424089,
+              "peak_rss_mib": 139.605
             },
             {
-              "wall_seconds": 0.382229,
-              "peak_rss_mib": 140.547
+              "wall_seconds": 0.468916,
+              "peak_rss_mib": 141.504
             },
             {
-              "wall_seconds": 0.368008,
-              "peak_rss_mib": 139.828
+              "wall_seconds": 0.431191,
+              "peak_rss_mib": 139.336
             }
           ],
           "png_bytes": 785983
@@ -54,24 +55,24 @@
         "paeth-node24": {
           "samples": [
             {
-              "wall_seconds": 0.322258,
-              "peak_rss_mib": 139.637
+              "wall_seconds": 0.353969,
+              "peak_rss_mib": 139.656
             },
             {
-              "wall_seconds": 0.310821,
-              "peak_rss_mib": 139.895
+              "wall_seconds": 0.343146,
+              "peak_rss_mib": 140.246
             },
             {
-              "wall_seconds": 0.324274,
-              "peak_rss_mib": 139.527
+              "wall_seconds": 0.329143,
+              "peak_rss_mib": 139.645
             },
             {
-              "wall_seconds": 0.31725,
-              "peak_rss_mib": 138.691
+              "wall_seconds": 0.376684,
+              "peak_rss_mib": 140.047
             },
             {
-              "wall_seconds": 0.326022,
-              "peak_rss_mib": 139.801
+              "wall_seconds": 0.329883,
+              "peak_rss_mib": 139.273
             }
           ],
           "png_bytes": 743940
@@ -79,24 +80,24 @@
         "paeth-node26": {
           "samples": [
             {
-              "wall_seconds": 0.326836,
-              "peak_rss_mib": 161.152
+              "wall_seconds": 0.379585,
+              "peak_rss_mib": 160.977
             },
             {
-              "wall_seconds": 0.297521,
-              "peak_rss_mib": 160.547
+              "wall_seconds": 0.325386,
+              "peak_rss_mib": 160.555
             },
             {
-              "wall_seconds": 0.30557,
-              "peak_rss_mib": 160.602
+              "wall_seconds": 0.314652,
+              "peak_rss_mib": 160.805
             },
             {
-              "wall_seconds": 0.304168,
-              "peak_rss_mib": 160.961
+              "wall_seconds": 0.441541,
+              "peak_rss_mib": 159.934
             },
             {
-              "wall_seconds": 0.293805,
-              "peak_rss_mib": 160.25
+              "wall_seconds": 0.320589,
+              "peak_rss_mib": 160.906
             }
           ],
           "png_bytes": 743940
@@ -104,24 +105,24 @@
         "paeth-bun142": {
           "samples": [
             {
-              "wall_seconds": 0.373459,
-              "peak_rss_mib": 147.699
+              "wall_seconds": 0.344661,
+              "peak_rss_mib": 144.168
             },
             {
-              "wall_seconds": 0.288665,
-              "peak_rss_mib": 144.574
+              "wall_seconds": 0.269501,
+              "peak_rss_mib": 144.648
             },
             {
-              "wall_seconds": 0.287254,
-              "peak_rss_mib": 144.375
+              "wall_seconds": 0.315237,
+              "peak_rss_mib": 144.094
             },
             {
-              "wall_seconds": 0.273571,
-              "peak_rss_mib": 144.461
+              "wall_seconds": 0.3134,
+              "peak_rss_mib": 144.598
             },
             {
-              "wall_seconds": 0.260591,
-              "peak_rss_mib": 144.039
+              "wall_seconds": 0.29589,
+              "peak_rss_mib": 144.055
             }
           ],
           "png_bytes": 743940
@@ -137,24 +138,24 @@
         "before-node24": {
           "samples": [
             {
-              "wall_seconds": 1.258157,
-              "peak_rss_mib": 266.469
+              "wall_seconds": 1.289312,
+              "peak_rss_mib": 269.367
             },
             {
-              "wall_seconds": 1.249289,
-              "peak_rss_mib": 262.516
+              "wall_seconds": 1.139908,
+              "peak_rss_mib": 300.094
             },
             {
-              "wall_seconds": 1.188524,
-              "peak_rss_mib": 262.629
+              "wall_seconds": 1.22917,
+              "peak_rss_mib": 288.648
             },
             {
-              "wall_seconds": 1.202619,
-              "peak_rss_mib": 262.57
+              "wall_seconds": 1.226844,
+              "peak_rss_mib": 258.863
             },
             {
-              "wall_seconds": 1.115623,
-              "peak_rss_mib": 338.559
+              "wall_seconds": 1.199888,
+              "peak_rss_mib": 263.883
             }
           ],
           "png_bytes": 606190
@@ -162,24 +163,24 @@
         "paeth-node24": {
           "samples": [
             {
-              "wall_seconds": 1.134363,
-              "peak_rss_mib": 266.535
+              "wall_seconds": 1.100336,
+              "peak_rss_mib": 263.695
             },
             {
-              "wall_seconds": 1.131782,
-              "peak_rss_mib": 300.258
+              "wall_seconds": 1.07533,
+              "peak_rss_mib": 303.965
             },
             {
-              "wall_seconds": 1.043839,
-              "peak_rss_mib": 262.844
+              "wall_seconds": 1.096021,
+              "peak_rss_mib": 259.316
             },
             {
-              "wall_seconds": 1.193795,
-              "peak_rss_mib": 342.059
+              "wall_seconds": 1.100412,
+              "peak_rss_mib": 264.484
             },
             {
-              "wall_seconds": 1.03105,
-              "peak_rss_mib": 264.949
+              "wall_seconds": 1.037691,
+              "peak_rss_mib": 337.289
             }
           ],
           "png_bytes": 593598
@@ -187,24 +188,24 @@
         "paeth-node26": {
           "samples": [
             {
-              "wall_seconds": 1.36552,
-              "peak_rss_mib": 350.73
+              "wall_seconds": 1.102253,
+              "peak_rss_mib": 396.066
             },
             {
-              "wall_seconds": 1.026959,
-              "peak_rss_mib": 322.246
+              "wall_seconds": 1.201595,
+              "peak_rss_mib": 283.242
             },
             {
-              "wall_seconds": 1.042915,
-              "peak_rss_mib": 286.309
+              "wall_seconds": 1.103249,
+              "peak_rss_mib": 280.594
             },
             {
-              "wall_seconds": 1.172358,
-              "peak_rss_mib": 287.145
+              "wall_seconds": 1.073211,
+              "peak_rss_mib": 286.055
             },
             {
-              "wall_seconds": 0.974404,
-              "peak_rss_mib": 287.758
+              "wall_seconds": 1.187617,
+              "peak_rss_mib": 282.73
             }
           ],
           "png_bytes": 593598
@@ -212,24 +213,24 @@
         "paeth-bun142": {
           "samples": [
             {
-              "wall_seconds": 1.045252,
-              "peak_rss_mib": 276.234
+              "wall_seconds": 1.055604,
+              "peak_rss_mib": 317.035
             },
             {
-              "wall_seconds": 1.065676,
-              "peak_rss_mib": 296.328
+              "wall_seconds": 1.09151,
+              "peak_rss_mib": 279.164
             },
             {
-              "wall_seconds": 0.887231,
-              "peak_rss_mib": 320.203
+              "wall_seconds": 1.02816,
+              "peak_rss_mib": 276.637
             },
             {
-              "wall_seconds": 0.935014,
-              "peak_rss_mib": 322.023
+              "wall_seconds": 1.071861,
+              "peak_rss_mib": 280.48
             },
             {
-              "wall_seconds": 0.940246,
-              "peak_rss_mib": 281.113
+              "wall_seconds": 1.140095,
+              "peak_rss_mib": 286.273
             }
           ],
           "png_bytes": 593598
@@ -245,24 +246,24 @@
         "before-node24": {
           "samples": [
             {
-              "wall_seconds": 0.754325,
-              "peak_rss_mib": 232.078
+              "wall_seconds": 0.762857,
+              "peak_rss_mib": 227.273
             },
             {
-              "wall_seconds": 0.765165,
-              "peak_rss_mib": 228.84
+              "wall_seconds": 0.790705,
+              "peak_rss_mib": 232.203
             },
             {
-              "wall_seconds": 0.751039,
-              "peak_rss_mib": 232.922
+              "wall_seconds": 0.812357,
+              "peak_rss_mib": 229.23
             },
             {
-              "wall_seconds": 0.707248,
-              "peak_rss_mib": 234.789
+              "wall_seconds": 0.713653,
+              "peak_rss_mib": 234.617
             },
             {
-              "wall_seconds": 0.762396,
-              "peak_rss_mib": 228.102
+              "wall_seconds": 0.809847,
+              "peak_rss_mib": 228.18
             }
           ],
           "png_bytes": 615582
@@ -270,24 +271,24 @@
         "paeth-node24": {
           "samples": [
             {
-              "wall_seconds": 0.726614,
-              "peak_rss_mib": 229.316
+              "wall_seconds": 0.646101,
+              "peak_rss_mib": 227.457
             },
             {
-              "wall_seconds": 0.696243,
-              "peak_rss_mib": 227.695
+              "wall_seconds": 0.713419,
+              "peak_rss_mib": 229.242
             },
             {
-              "wall_seconds": 0.667866,
-              "peak_rss_mib": 227.469
+              "wall_seconds": 0.698642,
+              "peak_rss_mib": 228.188
             },
             {
-              "wall_seconds": 0.66515,
-              "peak_rss_mib": 231.473
+              "wall_seconds": 0.655906,
+              "peak_rss_mib": 233.793
             },
             {
-              "wall_seconds": 0.640945,
-              "peak_rss_mib": 229.602
+              "wall_seconds": 0.699996,
+              "peak_rss_mib": 225.379
             }
           ],
           "png_bytes": 601201
@@ -295,24 +296,24 @@
         "paeth-node26": {
           "samples": [
             {
-              "wall_seconds": 0.649753,
-              "peak_rss_mib": 248.836
+              "wall_seconds": 0.662055,
+              "peak_rss_mib": 247.602
             },
             {
-              "wall_seconds": 0.767862,
-              "peak_rss_mib": 249.066
+              "wall_seconds": 0.685169,
+              "peak_rss_mib": 251.344
             },
             {
-              "wall_seconds": 0.656341,
-              "peak_rss_mib": 248.25
+              "wall_seconds": 0.756311,
+              "peak_rss_mib": 250.152
             },
             {
-              "wall_seconds": 0.648735,
-              "peak_rss_mib": 251.77
+              "wall_seconds": 0.639699,
+              "peak_rss_mib": 244.672
             },
             {
-              "wall_seconds": 0.596292,
-              "peak_rss_mib": 248.125
+              "wall_seconds": 0.715748,
+              "peak_rss_mib": 247.754
             }
           ],
           "png_bytes": 601201
@@ -320,24 +321,24 @@
         "paeth-bun142": {
           "samples": [
             {
-              "wall_seconds": 0.567684,
-              "peak_rss_mib": 254.66
+              "wall_seconds": 0.584451,
+              "peak_rss_mib": 253.043
             },
             {
-              "wall_seconds": 0.600371,
-              "peak_rss_mib": 254.438
+              "wall_seconds": 0.591934,
+              "peak_rss_mib": 253.641
             },
             {
-              "wall_seconds": 0.570031,
-              "peak_rss_mib": 260.863
+              "wall_seconds": 0.713305,
+              "peak_rss_mib": 262.797
             },
             {
-              "wall_seconds": 0.547791,
-              "peak_rss_mib": 254.457
+              "wall_seconds": 0.573048,
+              "peak_rss_mib": 255.59
             },
             {
-              "wall_seconds": 0.559153,
-              "peak_rss_mib": 253.934
+              "wall_seconds": 0.643034,
+              "peak_rss_mib": 254.203
             }
           ],
           "png_bytes": 601201
@@ -353,24 +354,24 @@
         "before-node24": {
           "samples": [
             {
-              "wall_seconds": 2.037143,
-              "peak_rss_mib": 372.297
+              "wall_seconds": 2.291526,
+              "peak_rss_mib": 328.867
             },
             {
-              "wall_seconds": 2.072569,
-              "peak_rss_mib": 335.23
+              "wall_seconds": 2.233293,
+              "peak_rss_mib": 395.68
             },
             {
-              "wall_seconds": 2.23251,
-              "peak_rss_mib": 325.82
+              "wall_seconds": 2.155671,
+              "peak_rss_mib": 365.121
             },
             {
-              "wall_seconds": 2.169311,
-              "peak_rss_mib": 331.711
+              "wall_seconds": 2.25302,
+              "peak_rss_mib": 331.027
             },
             {
-              "wall_seconds": 2.176399,
-              "peak_rss_mib": 320.758
+              "wall_seconds": 2.525221,
+              "peak_rss_mib": 317.66
             }
           ],
           "png_bytes": 682752
@@ -378,24 +379,24 @@
         "paeth-node24": {
           "samples": [
             {
-              "wall_seconds": 2.037121,
-              "peak_rss_mib": 346.613
+              "wall_seconds": 2.125703,
+              "peak_rss_mib": 330.262
             },
             {
-              "wall_seconds": 2.273828,
-              "peak_rss_mib": 321.574
+              "wall_seconds": 2.169643,
+              "peak_rss_mib": 326.98
             },
             {
-              "wall_seconds": 2.216022,
-              "peak_rss_mib": 327.664
+              "wall_seconds": 2.23294,
+              "peak_rss_mib": 327.148
             },
             {
-              "wall_seconds": 2.057745,
-              "peak_rss_mib": 321.98
+              "wall_seconds": 2.213685,
+              "peak_rss_mib": 318.68
             },
             {
-              "wall_seconds": 2.132418,
-              "peak_rss_mib": 317.926
+              "wall_seconds": 2.129304,
+              "peak_rss_mib": 397.258
             }
           ],
           "png_bytes": 692283
@@ -403,24 +404,24 @@
         "paeth-node26": {
           "samples": [
             {
-              "wall_seconds": 2.139477,
-              "peak_rss_mib": 347.062
+              "wall_seconds": 2.090543,
+              "peak_rss_mib": 352.871
             },
             {
-              "wall_seconds": 2.0362,
-              "peak_rss_mib": 353.59
+              "wall_seconds": 2.247225,
+              "peak_rss_mib": 338.57
             },
             {
-              "wall_seconds": 2.00696,
-              "peak_rss_mib": 349.438
+              "wall_seconds": 2.057548,
+              "peak_rss_mib": 348.551
             },
             {
-              "wall_seconds": 1.968802,
-              "peak_rss_mib": 351.137
+              "wall_seconds": 2.094419,
+              "peak_rss_mib": 347.613
             },
             {
-              "wall_seconds": 2.114737,
-              "peak_rss_mib": 345.805
+              "wall_seconds": 2.209202,
+              "peak_rss_mib": 350.301
             }
           ],
           "png_bytes": 692283
@@ -428,24 +429,24 @@
         "paeth-bun142": {
           "samples": [
             {
-              "wall_seconds": 1.826694,
-              "peak_rss_mib": 331.148
+              "wall_seconds": 1.957301,
+              "peak_rss_mib": 330.684
             },
             {
-              "wall_seconds": 1.842093,
-              "peak_rss_mib": 329.934
+              "wall_seconds": 1.898214,
+              "peak_rss_mib": 333.664
             },
             {
-              "wall_seconds": 1.866612,
-              "peak_rss_mib": 329.332
+              "wall_seconds": 1.947825,
+              "peak_rss_mib": 340.465
             },
             {
-              "wall_seconds": 1.869944,
-              "peak_rss_mib": 331.207
+              "wall_seconds": 1.929507,
+              "peak_rss_mib": 341.199
             },
             {
-              "wall_seconds": 1.869894,
-              "peak_rss_mib": 330.328
+              "wall_seconds": 2.013185,
+              "peak_rss_mib": 330.035
             }
           ],
           "png_bytes": 692283
@@ -461,24 +462,24 @@
         "before-node24": {
           "samples": [
             {
-              "wall_seconds": 1.053332,
-              "peak_rss_mib": 251.66
+              "wall_seconds": 1.088142,
+              "peak_rss_mib": 252.949
             },
             {
-              "wall_seconds": 1.047263,
-              "peak_rss_mib": 259.367
+              "wall_seconds": 1.083193,
+              "peak_rss_mib": 250.656
             },
             {
-              "wall_seconds": 1.060323,
-              "peak_rss_mib": 250.332
+              "wall_seconds": 1.169281,
+              "peak_rss_mib": 258.816
             },
             {
-              "wall_seconds": 1.035778,
-              "peak_rss_mib": 258.898
+              "wall_seconds": 1.126381,
+              "peak_rss_mib": 252.891
             },
             {
-              "wall_seconds": 1.032399,
-              "peak_rss_mib": 255.059
+              "wall_seconds": 1.154327,
+              "peak_rss_mib": 260.062
             }
           ],
           "png_bytes": 685309
@@ -486,24 +487,24 @@
         "paeth-node24": {
           "samples": [
             {
-              "wall_seconds": 0.977126,
-              "peak_rss_mib": 258.766
+              "wall_seconds": 1.047438,
+              "peak_rss_mib": 256.148
             },
             {
-              "wall_seconds": 0.984651,
-              "peak_rss_mib": 256.828
+              "wall_seconds": 1.009392,
+              "peak_rss_mib": 254.199
             },
             {
-              "wall_seconds": 1.030422,
-              "peak_rss_mib": 262.961
+              "wall_seconds": 1.307941,
+              "peak_rss_mib": 253.426
             },
             {
-              "wall_seconds": 0.940229,
-              "peak_rss_mib": 262.801
+              "wall_seconds": 1.062157,
+              "peak_rss_mib": 254.945
             },
             {
-              "wall_seconds": 0.986789,
-              "peak_rss_mib": 248.941
+              "wall_seconds": 1.104253,
+              "peak_rss_mib": 257.449
             }
           ],
           "png_bytes": 694611
@@ -511,24 +512,24 @@
         "paeth-node26": {
           "samples": [
             {
-              "wall_seconds": 0.92419,
-              "peak_rss_mib": 269.371
+              "wall_seconds": 1.001908,
+              "peak_rss_mib": 272.387
             },
             {
-              "wall_seconds": 0.976862,
-              "peak_rss_mib": 272.098
+              "wall_seconds": 0.994923,
+              "peak_rss_mib": 276.617
             },
             {
-              "wall_seconds": 1.024688,
-              "peak_rss_mib": 274.516
+              "wall_seconds": 1.028328,
+              "peak_rss_mib": 269.871
             },
             {
-              "wall_seconds": 0.953728,
-              "peak_rss_mib": 269.492
+              "wall_seconds": 1.03672,
+              "peak_rss_mib": 272.09
             },
             {
-              "wall_seconds": 0.986115,
-              "peak_rss_mib": 275.922
+              "wall_seconds": 1.084091,
+              "peak_rss_mib": 273.551
             }
           ],
           "png_bytes": 694611
@@ -536,24 +537,24 @@
         "paeth-bun142": {
           "samples": [
             {
-              "wall_seconds": 0.786979,
-              "peak_rss_mib": 265.375
+              "wall_seconds": 0.891184,
+              "peak_rss_mib": 266.152
             },
             {
-              "wall_seconds": 0.830918,
-              "peak_rss_mib": 267.434
+              "wall_seconds": 0.896224,
+              "peak_rss_mib": 264.316
             },
             {
-              "wall_seconds": 0.915995,
-              "peak_rss_mib": 266.023
+              "wall_seconds": 0.899855,
+              "peak_rss_mib": 267.469
             },
             {
-              "wall_seconds": 0.792035,
-              "peak_rss_mib": 268.996
+              "wall_seconds": 0.821842,
+              "peak_rss_mib": 262.609
             },
             {
-              "wall_seconds": 0.788989,
-              "peak_rss_mib": 266.047
+              "wall_seconds": 0.913916,
+              "peak_rss_mib": 268.074
             }
           ],
           "png_bytes": 694611

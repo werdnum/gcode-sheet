@@ -8,23 +8,23 @@ Wall times are medians of five fresh processes per case, interleaving variants. 
 
 | Input | Detail | Previous Node 24 | Paeth + Node 24 | Paeth + Node 26 | Paeth + Bun |
 |---|---|---:|---:|---:|---:|
-| Caliper, 0.18 MB payload | full | 0.391 s | 0.322 s | 0.304 s | 0.287 s |
-| Prusa MMU fixture, 13.05 MB | full | 1.203 s | 1.132 s | 1.043 s | 0.940 s |
-| Prusa MMU fixture, 13.05 MB | shell | 0.754 s | 0.668 s | 0.650 s | 0.568 s |
-| Prusa large fixture, 27.79 MB payload | full | 2.169 s | 2.132 s | 2.036 s | 1.867 s |
-| Prusa large fixture, 27.79 MB payload | shell | 1.047 s | 0.985 s | 0.977 s | 0.792 s |
+| Caliper, 0.18 MB payload | full | 0.431 s | 0.343 s | 0.325 s | 0.313 s |
+| Prusa MMU fixture, 13.05 MB | full | 1.227 s | 1.096 s | 1.103 s | 1.072 s |
+| Prusa MMU fixture, 13.05 MB | shell | 0.791 s | 0.699 s | 0.685 s | 0.592 s |
+| Prusa large fixture, 27.79 MB payload | full | 2.253 s | 2.170 s | 2.094 s | 1.948 s |
+| Prusa large fixture, 27.79 MB payload | shell | 1.126 s | 1.062 s | 1.028 s | 0.896 s |
 
-The Node change reduces total time by about 2–18% here. Bun with the same change reduces total time by about 14–27% relative to the previous Node version, or 11–20% relative to the updated Node version. These measurements describe this host and these inputs; graphics-heavy workloads remain limited by Mesa.
+The Node change reduces total time by about 4–20% here. Bun with the same change reduces total time by about 13–27% relative to the previous Node version, or 2–16% relative to the updated Node version. These measurements describe this host and these inputs; graphics-heavy workloads remain limited by Mesa.
 
 | Input / detail | Paeth + Node 24 peak RSS | Paeth + Node 26 peak RSS | Paeth + Bun peak RSS |
 |---|---:|---:|---:|
 | Caliper / full | 140 MiB | 161 MiB | 144 MiB |
-| MMU / full | 267 MiB | 288 MiB | 296 MiB |
-| MMU / shell | 229 MiB | 249 MiB | 254 MiB |
-| Large / full | 322 MiB | 349 MiB | 330 MiB |
-| Large / shell | 259 MiB | 272 MiB | 266 MiB |
+| MMU / full | 264 MiB | 283 MiB | 280 MiB |
+| MMU / shell | 228 MiB | 248 MiB | 254 MiB |
+| Large / full | 327 MiB | 349 MiB | 334 MiB |
+| Large / shell | 255 MiB | 272 MiB | 266 MiB |
 
-Peak RSS is the median of per-process high-water marks, including native graphics allocations. Node 26.12.0 was faster than Node 24.19.0 in these repeated runs but used more memory. Bun 1.4.2 was faster still, with workload-dependent memory use. The flake's pinned Bun version matches the benchmark; its native addon compatibility is checked on both supported architectures.
+Peak RSS is the median of per-process high-water marks, including native graphics allocations. Node 26.12.0 was modestly faster than Node 24.19.0 on most cases but used more memory. Bun 1.4.2's CPU-baseline x86_64 build had the lowest median times, with workload-dependent memory use. Its 2% advantage over updated Node on the MMU full-detail case is small enough to treat cautiously. The flake's pinned Bun version and upstream binary variant match the benchmark; native addon compatibility is checked on both supported architectures.
 
 ## What changed and what was ruled out
 
