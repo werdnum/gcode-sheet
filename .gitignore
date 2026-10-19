@@ -147,3 +147,13 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Nix build outputs
+result
+result-*
+
+# Generated benchmark files
+bench/data/
+bench/*.gcode
+bench/*.bgcode
+bench/*.png
