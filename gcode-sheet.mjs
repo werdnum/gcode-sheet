@@ -746,7 +746,8 @@ async function main() {
     let relE = false;
     let relXYZ = false;
     let unitScale = 1;
-    let tool = 0;
+    let physTool = 0;
+    let featureIdx = 0;
     let extWidth = defaultWidth;
     let lineHeight = defaultHeight;
     let inStart = !values['include-start'] && hasLayerMarkers(gcodePath);
@@ -761,7 +762,8 @@ async function main() {
     let pathCap = 8192;
     let pathPts = new Float64Array(pathCap * 3);
     let pathLen = 0;
-    let pathTool = 0;
+    let pathColorIdx = 0;
+    let pathPhysTool = 0;
     let pathWidth = defaultWidth;
     let pathHeight = defaultHeight;
     let inExtrusionPath = false;
@@ -818,19 +820,22 @@ async function main() {
 
     const finishExtrusionPath = () => {
       if (inExtrusionPath && pathLen >= 2) {
-        toolsSeen.add(pathTool);
-        if (byFeature) featuresSeen.add(pathTool);
-        getBuilder(pathTool).addPath(pathPts, pathLen, pathWidth, pathHeight);
+        toolsSeen.add(pathPhysTool);
+        if (byFeature) featuresSeen.add(pathColorIdx);
+        getBuilder(pathColorIdx).addPath(pathPts, pathLen, pathWidth, pathHeight);
       }
       inExtrusionPath = false;
       pathLen = 0;
     };
 
     const ensureExtrusionPath = () => {
-      if (!inExtrusionPath || pathTool !== tool || pathWidth !== extWidth || pathHeight !== lineHeight) {
+      const colorIdx = byFeature ? featureIdx : physTool;
+      // Slot changes must be recorded even when the feature colour stays the same.
+      if (!inExtrusionPath || pathColorIdx !== colorIdx || pathPhysTool !== physTool || pathWidth !== extWidth || pathHeight !== lineHeight) {
         finishExtrusionPath();
         inExtrusionPath = true;
-        pathTool = tool;
+        pathColorIdx = colorIdx;
+        pathPhysTool = physTool;
         pathWidth = extWidth;
         pathHeight = lineHeight;
         pushPathPoint(stateX, stateY, stateZ);
@@ -937,7 +942,7 @@ async function main() {
           inInterior = shell && layer > 1 && INTERIOR.has(t);
           inWipeTower = (t === 'Wipe tower');
           if (byFeature) {
-            tool = TYPE_TO_TOOL.has(t) ? TYPE_TO_TOOL.get(t) : 7;
+            featureIdx = TYPE_TO_TOOL.has(t) ? TYPE_TO_TOOL.get(t) : 7;
           }
           return;
         }
@@ -1029,8 +1034,8 @@ async function main() {
       }
 
       if (firstChar === 116) {
-        if (!byFeature && cmdNum >= 0 && cmdNum <= 7) {
-          tool = cmdNum | 0;
+        if (cmdNum >= 0 && cmdNum <= 7) {
+          physTool = cmdNum | 0;
         }
         return;
       }
@@ -1038,7 +1043,7 @@ async function main() {
       if (firstChar === 109) {
         if (cmdNum === 82) relE = false;
         else if (cmdNum === 83) relE = true;
-        else if (cmdNum === 600 && !byFeature && !inStart) {
+        else if (cmdNum === 600 && !inStart) {
           let explicitT = NaN;
           while (pos < cmdEnd) {
             const ch = str.charCodeAt(pos) | 32;
@@ -1053,8 +1058,8 @@ async function main() {
               if (ch === 116) explicitT = parseFastFloat(str, vStart, pos);
             } else pos++;
           }
-          if (explicitT >= 0 && explicitT <= 7) tool = explicitT | 0;
-          else tool = (tool + 1) % numUserToolColors;
+          if (explicitT >= 0 && explicitT <= 7) physTool = explicitT | 0;
+          else physTool = (physTool + 1) % numUserToolColors;
         }
         return;
       }

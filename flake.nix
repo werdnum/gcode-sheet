@@ -122,18 +122,27 @@
             GCODE_SHEET_BIN="${gcode-sheet}/bin/gcode-sheet" \
               node --test ${./test/parser.test.mjs}
             gcode-sheet "${fixture}" "$TMPDIR/caliper.png" > "$TMPDIR/summary.json"
+            gcode-sheet "${fixture}" "$TMPDIR/caliper-feature.png" --color-by feature > "$TMPDIR/feature-summary.json"
             cat "$TMPDIR/summary.json"
+            cat "$TMPDIR/feature-summary.json"
 
             NODE_PATH="${gcode-sheet}/lib/node_modules/gcode-sheet/node_modules" \
-            node - "$TMPDIR/caliper.png" "$TMPDIR/summary.json" <<'EOF'
+            node - "$TMPDIR/caliper.png" "$TMPDIR/summary.json" "$TMPDIR/feature-summary.json" <<'EOF'
             const fs = require('node:fs');
             const assert = require('node:assert/strict');
             const { PNG } = require('pngjs');
 
-            const [pngPath, jsonPath] = process.argv.slice(2);
+            const [pngPath, jsonPath, featureJsonPath] = process.argv.slice(2);
             const summary = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
             assert.equal(summary.layers, 29, 'Expected 29 layers in caliper fixture');
             assert.deepEqual(summary.tools, [2], 'Expected tool [2] in caliper fixture');
+
+            const featureSummary = JSON.parse(fs.readFileSync(featureJsonPath, 'utf8'));
+            assert.equal(featureSummary.colorBy, 'feature');
+            assert.deepEqual(featureSummary.tools, [2], 'Feature mode must report the physical tool [2]');
+            assert.deepEqual(featureSummary.bbox_mm, summary.bbox_mm);
+            assert.equal(featureSummary.layers, summary.layers);
+            assert.ok(featureSummary.legend.includes('External perimeter=#F59E0B'));
 
             const buf = fs.readFileSync(pngPath);
             assert.ok(buf.length > 50000, "PNG file too small: " + buf.length);
@@ -156,6 +165,8 @@
             mkdir -p "$out"
             cp "$TMPDIR/caliper.png" "$out/caliper.png"
             cp "$TMPDIR/summary.json" "$out/summary.json"
+            cp "$TMPDIR/caliper-feature.png" "$out/caliper-feature.png"
+            cp "$TMPDIR/feature-summary.json" "$out/feature-summary.json"
           '';
         }
       );

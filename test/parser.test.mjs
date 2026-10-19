@@ -127,3 +127,46 @@ test('shell filtering preserves absolute extrusion state for the next visible fe
   ].join('\n'), ['--detail', 'shell']);
   assert.deepEqual(result.summary.bbox_mm.x, [0, 20]);
 });
+
+test('feature colours report the physical slot across multiple feature groups', () => {
+  const code = [
+    'T2', 'M83', 'G0 Z0.2', ';TYPE:External perimeter', 'G1 X10 E1',
+    ';TYPE:Internal infill', 'G1 Y10 E1', ';TYPE:Top solid infill', 'G1 X0 E1',
+  ].join('\n');
+  const result = render(code, ['--color-by', 'feature']);
+  assert.deepEqual(result.summary.tools, [2]);
+  assert.deepEqual(result.summary.legend, [
+    'External perimeter=#F59E0B', 'Sparse infill=#B91C1C', 'Solid / top infill=#A855F7',
+  ]);
+  const otherSlot = render(code.replace('T2', 'T4'), ['--color-by', 'feature']);
+  assert.deepEqual(otherSlot.summary.tools, [4]);
+  assert.deepEqual(result.png, otherSlot.png);
+});
+
+test('a slot change within one feature records both extruding slots', () => {
+  const code = [
+    'T2', 'M83', 'G0 Z0.2', ';TYPE:External perimeter', 'G1 X10 E1',
+    'T4', 'G1 X20 E1', 'T6',
+  ].join('\n');
+  const result = render(code, ['--color-by', 'feature']);
+  assert.deepEqual(result.summary.tools, [2, 4]);
+  assert.deepEqual(result.summary.legend, ['External perimeter=#F59E0B']);
+  const singleSlot = render(code.replace('T4', 'T2'), ['--color-by', 'feature']);
+  assert.deepEqual(result.png, singleSlot.png);
+});
+
+for (const mode of ['tool', 'feature']) {
+  test(mode + ' mode tracks explicit and implicit M600 slots and ignores startup changes', () => {
+    const result = render([
+      'T2', 'M83', 'M600 T7', ';LAYER_CHANGE', 'G0 Z0.2',
+      ';TYPE:External perimeter', 'G1 X10 E1', 'M600', 'G1 X20 E1',
+      'M600 T6', 'G1 X30 E1', 'M600', 'G1 X40 E1',
+    ].join('\n'), ['--color-by', mode, '--tool-colors', '#ff0000,#00ff00,#0000ff']);
+    assert.deepEqual(result.summary.tools, [0, 1, 2, 6]);
+    if (mode === 'feature') {
+      assert.deepEqual(result.summary.legend, ['External perimeter=#F59E0B']);
+    } else {
+      assert.deepEqual(result.summary.legend, ['T0=#ff0000', 'T1=#00ff00', 'T2=#0000ff', 'T6=#888888']);
+    }
+  });
+}

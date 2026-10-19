@@ -39,6 +39,8 @@ nix flake check -L
 
 Every run prints a JSON summary to `stdout` for downstream automation / AI inspection:
 
+`tools` always lists the physical MMU slots that contributed rendered paths, including in feature colour mode. `legend` describes the colours used by the selected mode.
+
 ```json
 {
   "output": "out.png",
