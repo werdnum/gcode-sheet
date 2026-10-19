@@ -1204,7 +1204,9 @@ async function main() {
       drawAnnotations(sheet, views, panelW, panelH, sheetCols, legendItems);
     }
 
-    fs.writeFileSync(output, PNG.sync.write(sheet));
+    // Paeth suits the large flat backgrounds and shaded paths in these sheets.
+    // Fixing the filter avoids scoring all five PNG filters for every row.
+    fs.writeFileSync(output, PNG.sync.write(sheet, { filterType: 4 }));
     console.log(JSON.stringify({
       output,
       views,

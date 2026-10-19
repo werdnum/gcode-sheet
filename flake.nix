@@ -32,7 +32,7 @@
             pkgs.stdenv.cc.cc.lib
           ];
 
-          gcode-sheet = pkgs.buildNpmPackage {
+          mkGcodeSheet = runtime: runtimeBin: pkgs.buildNpmPackage {
             pname = "gcode-sheet";
             version = "1.0.0";
 
@@ -70,6 +70,7 @@
               mkdir -p "$addonDir"
               tar -xzf "${glesTarball}" --no-same-owner -C "$addonDir"
               chmod +x "$out/lib/node_modules/gcode-sheet/gcode-sheet.mjs"
+              sed -i '1c#!${runtime}/bin/${runtimeBin}' "$out/lib/node_modules/gcode-sheet/gcode-sheet.mjs"
 
               wrapProgram "$out/bin/gcode-sheet" \
                 --prefix PATH : "${pkgs.lib.makeBinPath [ pkgs.libbgcode ]}" \
@@ -91,10 +92,13 @@
               mainProgram = "gcode-sheet";
             };
           };
+          gcode-sheet = mkGcodeSheet pkgs.nodejs_24 "node";
+          gcode-sheet-bun = mkGcodeSheet pkgs.bun "bun";
         in
         {
           default = gcode-sheet;
           inherit gcode-sheet;
+          bun = gcode-sheet-bun;
         }
       );
 
@@ -106,16 +110,18 @@
             description = "Headless G-code/bgcode toolpath contact-sheet renderer";
           };
         };
+        bun = {
+          type = "app";
+          program = "${self.packages.${system}.bun}/bin/gcode-sheet";
+          meta.description = "G-code contact-sheet renderer using Bun";
+        };
       });
 
       checks = forAllSystems (system:
         let
           pkgs = import nixpkgs { inherit system; };
-          gcode-sheet = self.packages.${system}.default;
           fixture = ./caliper-battery-cover-flatbase-0.1mm-black-pla-slot3.bgcode;
-        in
-        {
-          default = pkgs.runCommand "gcode-sheet-check" {
+          checkPackage = gcode-sheet: pkgs.runCommand "gcode-sheet-check" {
             nativeBuildInputs = [ gcode-sheet pkgs.nodejs_24 ];
           } ''
             export HOME="$TMPDIR"
@@ -167,6 +173,37 @@
             cp "$TMPDIR/summary.json" "$out/summary.json"
             cp "$TMPDIR/caliper-feature.png" "$out/caliper-feature.png"
             cp "$TMPDIR/feature-summary.json" "$out/feature-summary.json"
+          '';
+          nodeCheck = checkPackage self.packages.${system}.default;
+          bunCheck = checkPackage self.packages.${system}.bun;
+        in
+        {
+          default = nodeCheck;
+          bun = bunCheck;
+          runtime-equivalence = pkgs.runCommand "gcode-sheet-runtime-equivalence" {
+            nativeBuildInputs = [ pkgs.nodejs_24 ];
+          } ''
+            NODE_PATH="${self.packages.${system}.default}/lib/node_modules/gcode-sheet/node_modules" \
+            node - "${nodeCheck}" "${bunCheck}" <<'EOF'
+            const fs = require('node:fs');
+            const assert = require('node:assert/strict');
+            const { PNG } = require('pngjs');
+            const [nodeDir, bunDir] = process.argv.slice(2);
+            for (const name of ['caliper', 'caliper-feature']) {
+              const nodeImage = PNG.sync.read(fs.readFileSync(nodeDir + '/' + name + '.png'));
+              const bunImage = PNG.sync.read(fs.readFileSync(bunDir + '/' + name + '.png'));
+              assert.equal(nodeImage.width, bunImage.width);
+              assert.equal(nodeImage.height, bunImage.height);
+              assert.deepEqual(nodeImage.data, bunImage.data, name + ' pixels differ between runtimes');
+              const json = name === 'caliper' ? 'summary.json' : 'feature-summary.json';
+              const nodeSummary = JSON.parse(fs.readFileSync(nodeDir + '/' + json, 'utf8'));
+              const bunSummary = JSON.parse(fs.readFileSync(bunDir + '/' + json, 'utf8'));
+              delete nodeSummary.output;
+              delete bunSummary.output;
+              assert.deepEqual(nodeSummary, bunSummary);
+            }
+            EOF
+            touch "$out"
           '';
         }
       );
