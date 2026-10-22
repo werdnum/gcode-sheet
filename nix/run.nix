@@ -18,7 +18,21 @@ runCommand "gcode-sheet.run" {
   # Unpacks once into \$GCODE_SHEET_CACHE (default ~/.cache/gcode-sheet), then runs.
   set -e
   self=\$(readlink -f "\$0")
-  dir="\''${GCODE_SHEET_CACHE:-\''${XDG_CACHE_HOME:-\''${HOME:-/tmp}/.cache}/gcode-sheet}/$id"
+  if [ -n "\''${GCODE_SHEET_CACHE:-}" ]; then root=\$GCODE_SHEET_CACHE
+  elif [ -n "\''${XDG_CACHE_HOME:-}" ]; then root=\$XDG_CACHE_HOME/gcode-sheet
+  elif [ -n "\''${HOME:-}" ]; then root=\$HOME/.cache/gcode-sheet
+  else
+    # No home directory: use a per-user dir in /tmp, and refuse one another user could
+    # have planted (the launcher runs whatever it finds there).
+    root=\''${TMPDIR:-/tmp}/gcode-sheet-\$(id -u)
+    mkdir -m 700 -p "\$root"
+    if [ -L "\$root" ] || [ ! -O "\$root" ]; then
+      echo "gcode-sheet: \$root is not a directory you own; set GCODE_SHEET_CACHE" >&2
+      exit 1
+    fi
+    chmod 700 "\$root"
+  fi
+  dir=\$root/$id
   if [ ! -x "\$dir/gcode-sheet" ]; then
     mkdir -p "\''${dir%/*}"
     tmp=\$(mktemp -d "\$dir.XXXXXX")

@@ -197,9 +197,11 @@
             export HOME="$TMPDIR" GCODE_SHEET_CACHE="$TMPDIR/cache"
             LD_DEBUG=libs,files LD_DEBUG_OUTPUT="$TMPDIR/ld" \
               ${self.packages.${system}.run} "${fixture}" caliper.png > summary.json
-            # Once a process has exec'd into the bundled loader, every lookup must stay inside it.
-            outside=$(awk 'FNR == 1 { inside = 0 } /libexec\/(node|bgcode) / { inside = 1 }
-              inside && /trying file=/' "$TMPDIR"/ld.* | grep -v "trying file=$GCODE_SHEET_CACHE/" || true)
+            # Once a process has exec'd into the bundled loader, every path it searches, opens
+            # (dlopen of absolute paths included) or initialises must be inside the bundle.
+            outside=$(awk 'FNR == 1 { inside = 0 } /libexec\/(node|bgcode) / { inside = 1 } inside' "$TMPDIR"/ld.* |
+              grep -oE '(trying file=|file=|calling init: )/[^ ]+' | sed -E 's/^(trying file=|file=|calling init: )//' |
+              grep -v "^$GCODE_SHEET_CACHE/" | sort -u || true)
             if [ -n "$outside" ]; then echo "Libraries loaded from outside the bundle:"; echo "$outside"; exit 1; fi
             grep -q 'libexec/node ' "$TMPDIR"/ld.* && grep -q 'libexec/bgcode ' "$TMPDIR"/ld.*
 
