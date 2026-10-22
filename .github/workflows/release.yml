@@ -1,16 +1,33 @@
 name: Release
 
-# Pushing a v* tag publishes gcode-sheet-<arch>.run (the flake's `run` output) to a
-# GitHub release, which is what the README's download one-liner fetches.
+# Publishes gcode-sheet-<arch>.run (the flake's `run` output) as a GitHub release, which
+# is what the README's download one-liner fetches. Every push to main that can change
+# the executable gets a new release v1.0.<run number>; pushing a v* tag, or running the
+# workflow by hand, publishes too.
 on:
   push:
+    branches: [ main ]
+    paths:
+      - flake.nix
+      - flake.lock
+      - nix/**
+      - gcode-sheet.mjs
+      - package.json
+      - package-lock.json
+      - .github/workflows/release.yml
     tags: [ 'v*' ]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+# One release at a time, in push order.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  bundle:
+  build:
     name: Build gcode-sheet-${{ matrix.arch }}.run
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -32,7 +49,32 @@ jobs:
           nix flake check -L
           cp -L "$(nix build .#run --print-out-paths)" gcode-sheet-${{ matrix.arch }}.run
 
-      - name: Attach to the release
-        uses: softprops/action-gh-release@v2
+      - name: Upload
+        uses: actions/upload-artifact@v4
         with:
-          files: gcode-sheet-${{ matrix.arch }}.run
+          name: gcode-sheet-${{ matrix.arch }}
+          path: gcode-sheet-${{ matrix.arch }}.run
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download executables
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag=$GITHUB_REF_NAME
+          else
+            tag=v1.0.$GITHUB_RUN_NUMBER
+          fi
+          gh release create "$tag" gcode-sheet-x86_64.run gcode-sheet-aarch64.run \
+            --target "$GITHUB_SHA" --title "$tag" --generate-notes --latest

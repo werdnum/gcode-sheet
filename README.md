@@ -37,7 +37,7 @@ nix flake check -L
 
 ## Without Nix: Single-File Download
 
-Each [release](https://github.com/werdnum/gcode-sheet/releases) attaches a self-contained executable for `x86_64` and `aarch64` Linux. It includes Node.js, Mesa `llvmpipe`, libbgcode and the libraries they load, glibc's dynamic loader among them. It works on any distro, including musl-based Alpine, and doesn't need Nix, root, user namespaces, FUSE or a GPU:
+Each push to `main` that changes the executable publishes a new [release](https://github.com/werdnum/gcode-sheet/releases) automatically. Each release attaches a self-contained executable for `x86_64` and `aarch64` Linux. It includes Node.js, Mesa `llvmpipe`, libbgcode and the libraries they load, glibc's dynamic loader among them. It works on any distro, including musl-based Alpine, and doesn't need Nix, root, user namespaces, FUSE or a GPU:
 
 ```bash
 curl -fsSLo gcode-sheet https://github.com/werdnum/gcode-sheet/releases/latest/download/gcode-sheet-$(uname -m).run
