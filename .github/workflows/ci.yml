@@ -26,3 +26,27 @@ jobs:
 
       - name: Run nix flake check
         run: nix flake check -L
+
+  setup-script:
+    name: scripts/setup.sh without Nix (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run setup script
+        run: scripts/setup.sh
+
+      - name: Run tests
+        run: npm test

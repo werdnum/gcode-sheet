@@ -35,6 +35,23 @@ Run the flake test suite (checks parser regressions and the caliper `.bgcode` fi
 nix flake check -L
 ```
 
+## Without Nix (Debian / Ubuntu)
+
+One command sets up a checkout on Linux `x86_64` or `aarch64` with Node.js 20+. Nothing is compiled, and setup takes a few seconds:
+
+```bash
+scripts/setup.sh
+node gcode-sheet.mjs part.bgcode out.png
+```
+
+The script:
+
+1. Installs Mesa's EGL/GLES runtime (`libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri`) and libbgcode's `bgcode` CLI from apt if they're missing, using `sudo` when it isn't running as root. The `bgcode` package is in Debian trixie+ and Ubuntu 24.04+.
+2. Runs `npm ci`. `webgl-node` downloads a prebuilt `native-gles` addon.
+3. Renders the bundled fixture as a smoke test.
+
+On dnf-based distros it installs the Mesa packages only. Elsewhere, install the equivalents yourself and set `SKIP_SYSTEM_DEPS=1`. Plain `.gcode` works without `bgcode`. For `.bgcode`, put libbgcode's `bgcode` on `PATH` or point `BGCODE_BIN` at it. The headless EGL settings (`EGL_PLATFORM=surfaceless`, `GALLIUM_DRIVER=llvmpipe`, …) default inside the script, so you don't need a wrapper. `npm test` runs the parser tests.
+
 ## Example Output
 
 ### Caliper Battery Cover (`.bgcode` fixture)
