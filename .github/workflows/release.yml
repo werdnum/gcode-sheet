@@ -1,16 +1,35 @@
 name: Release
 
-# Pushing a v* tag publishes gcode-sheet-<arch>.run (the flake's `run` output) to a
-# GitHub release, which is what the README's download one-liner fetches.
+# Publishes gcode-sheet-<arch>.run (the flake's `run` output) as a GitHub release, which
+# is what the README's download one-liner fetches. Pushes to main that can change the
+# executable publish v1.0.<run number>; pushing a v* tag, or running the workflow by
+# hand, publishes too.
 on:
   push:
+    branches: [ main ]
+    paths:
+      - flake.nix
+      - flake.lock
+      - nix/**
+      - gcode-sheet.mjs
+      - package.json
+      - package-lock.json
+      - .github/workflows/release.yml
     tags: [ 'v*' ]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+# One release at a time. GitHub keeps only the newest pending run, so pushes that land
+# while a release is building are coalesced and only the most recent is released.
+# Queue order isn't guaranteed, so the publish step also checks freshness itself.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  bundle:
+  build:
     name: Build gcode-sheet-${{ matrix.arch }}.run
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -32,7 +51,44 @@ jobs:
           nix flake check -L
           cp -L "$(nix build .#run --print-out-paths)" gcode-sheet-${{ matrix.arch }}.run
 
-      - name: Attach to the release
-        uses: softprops/action-gh-release@v2
+      - name: Upload
+        uses: actions/upload-artifact@v4
         with:
-          files: gcode-sheet-${{ matrix.arch }}.run
+          name: gcode-sheet-${{ matrix.arch }}
+          path: gcode-sheet-${{ matrix.arch }}.run
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download executables
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          latest=--latest
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag=$GITHUB_REF_NAME
+          else
+            tag=v1.0.$GITHUB_RUN_NUMBER
+            # Run numbers grow with each push. If a newer run has already published,
+            # this one is stale: release it, but leave "latest" (the download link) alone.
+            current=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+            case "$current" in
+              v1.0.*[!0-9]* | v1.0.) ;;
+              v1.0.*)
+                if [ "${current#v1.0.}" -gt "$GITHUB_RUN_NUMBER" ]; then
+                  echo "::notice::$current is newer than run $GITHUB_RUN_NUMBER; not marking $tag as latest"
+                  latest=--latest=false
+                fi ;;
+            esac
+          fi
+          gh release create "$tag" gcode-sheet-x86_64.run gcode-sheet-aarch64.run \
+            --target "$GITHUB_SHA" --title "$tag" --generate-notes "$latest"
