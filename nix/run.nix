@@ -40,8 +40,8 @@ runCommand "gcode-sheet.run" {
     chmod +x "\$tmp/.zstd"
     tail -c +$(( $1 + zsize + 1 )) "\$self" | "\$tmp/.zstd" -dc --long=27 | tar -x -C "\$tmp"
     rm "\$tmp/.zstd"
-    # A concurrent first run may have got there first (mv would nest into its dir).
-    if [ -e "\$dir" ]; then rm -rf "\$tmp"; else mv "\$tmp" "\$dir"; fi
+    # Publish atomically: ln -n fails if a concurrent first run already won.
+    ln -sn "\''${tmp##*/}" "\$dir" 2>/dev/null || rm -rf "\$tmp"
   fi
   exec "\$dir/gcode-sheet" "\$@"
   EOF
