@@ -99,6 +99,15 @@
           default = gcode-sheet;
           inherit gcode-sheet;
           bun = gcode-sheet-bun;
+          # Relocatable directory and single-file self-extractor for machines without Nix.
+          bundle = pkgs.callPackage ./nix/bundle.nix {
+            inherit gcode-sheet runtimeLibs;
+            nodejs = pkgs.nodejs_24;
+          };
+          run = pkgs.callPackage ./nix/run.nix {
+            bundle = self.packages.${system}.bundle;
+            staticZstd = pkgs.pkgsStatic.zstd.bin;
+          };
         }
       );
 
@@ -180,6 +189,36 @@
         {
           default = nodeCheck;
           bun = bunCheck;
+          # The self-extractor must unpack, load every library from inside the bundle, and
+          # render exactly what the Nix package renders.
+          bundle = pkgs.runCommand "gcode-sheet-bundle-check" {
+            nativeBuildInputs = [ pkgs.nodejs_24 ];
+          } ''
+            export HOME="$TMPDIR" GCODE_SHEET_CACHE="$TMPDIR/cache"
+            LD_DEBUG=libs,files LD_DEBUG_OUTPUT="$TMPDIR/ld" \
+              ${self.packages.${system}.run} "${fixture}" caliper.png > summary.json
+            # Once a process has exec'd into the bundled loader, every lookup must stay inside it.
+            outside=$(awk 'FNR == 1 { inside = 0 } /libexec\/(node|bgcode) / { inside = 1 }
+              inside && /trying file=/' "$TMPDIR"/ld.* | grep -v "trying file=$GCODE_SHEET_CACHE/" || true)
+            if [ -n "$outside" ]; then echo "Libraries loaded from outside the bundle:"; echo "$outside"; exit 1; fi
+            grep -q 'libexec/node ' "$TMPDIR"/ld.* && grep -q 'libexec/bgcode ' "$TMPDIR"/ld.*
+
+            NODE_PATH="${self.packages.${system}.default}/lib/node_modules/gcode-sheet/node_modules" \
+            node - caliper.png summary.json "${nodeCheck}" <<'EOF'
+            const fs = require('node:fs');
+            const assert = require('node:assert/strict');
+            const { PNG } = require('pngjs');
+            const [png, json, ref] = process.argv.slice(2);
+            assert.deepEqual(PNG.sync.read(fs.readFileSync(png)).data,
+              PNG.sync.read(fs.readFileSync(ref + '/caliper.png')).data, 'bundle pixels differ from the Nix package');
+            const summary = JSON.parse(fs.readFileSync(json, 'utf8'));
+            const refSummary = JSON.parse(fs.readFileSync(ref + '/summary.json', 'utf8'));
+            delete summary.output;
+            delete refSummary.output;
+            assert.deepEqual(summary, refSummary);
+            EOF
+            touch "$out"
+          '';
           runtime-equivalence = pkgs.runCommand "gcode-sheet-runtime-equivalence" {
             nativeBuildInputs = [ pkgs.nodejs_24 ];
           } ''

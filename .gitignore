@@ -157,6 +157,3 @@ bench/data/
 bench/*.gcode
 bench/*.bgcode
 bench/*.png
-
-# Private system libraries unpacked by scripts/setup.sh
-.deps/

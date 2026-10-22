@@ -1,6 +1,0 @@
-#!/bin/sh
-# Run gcode-sheet with the private libraries scripts/setup.sh unpacks into .deps/
-# when it can't install system packages; otherwise this is just `node gcode-sheet.mjs`.
-repo="$(cd "$(dirname "$0")/.." && pwd)"
-if [ -f "$repo/.deps/env" ]; then . "$repo/.deps/env"; fi
-exec node "$repo/gcode-sheet.mjs" "$@"

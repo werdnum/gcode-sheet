@@ -1,0 +1,38 @@
+name: Release
+
+# Pushing a v* tag publishes gcode-sheet-<arch>.run (the flake's `run` output) to a
+# GitHub release, which is what the README's download one-liner fetches.
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    name: Build gcode-sheet-${{ matrix.arch }}.run
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Check and build
+        run: |
+          nix flake check -L
+          cp -L "$(nix build .#run --print-out-paths)" gcode-sheet-${{ matrix.arch }}.run
+
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: gcode-sheet-${{ matrix.arch }}.run
