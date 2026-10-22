@@ -1,9 +1,9 @@
 name: Release
 
 # Publishes gcode-sheet-<arch>.run (the flake's `run` output) as a GitHub release, which
-# is what the README's download one-liner fetches. Every push to main that can change
-# the executable gets a new release v1.0.<run number>; pushing a v* tag, or running the
-# workflow by hand, publishes too.
+# is what the README's download one-liner fetches. Pushes to main that can change the
+# executable publish v1.0.<run number>; pushing a v* tag, or running the workflow by
+# hand, publishes too.
 on:
   push:
     branches: [ main ]
@@ -21,7 +21,9 @@ on:
 permissions:
   contents: write
 
-# One release at a time, in push order.
+# One release at a time, so an older run can never finish last and become "latest".
+# GitHub keeps only the newest pending run: pushes that land while a release is
+# building are coalesced, and only the most recent of them is released.
 concurrency:
   group: release
   cancel-in-progress: false
