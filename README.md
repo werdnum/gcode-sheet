@@ -37,20 +37,24 @@ nix flake check -L
 
 ## Without Nix (Debian / Ubuntu)
 
-One command sets up a checkout on Linux `x86_64` or `aarch64` with Node.js 20+. Nothing is compiled, and setup takes a few seconds:
+One command sets up a checkout on Linux `x86_64` or `aarch64` with Node.js 20+. Nothing is compiled, and **root isn't required**:
 
 ```bash
 scripts/setup.sh
-node gcode-sheet.mjs part.bgcode out.png
+bin/gcode-sheet part.bgcode out.png
 ```
 
 The script:
 
-1. Installs Mesa's EGL/GLES runtime (`libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri`) and libbgcode's `bgcode` CLI from apt if they're missing, using `sudo` when it isn't running as root. The `bgcode` package is in Debian trixie+ and Ubuntu 24.04+.
+1. Gets Mesa's EGL/GLES software renderer (`libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri`) and libbgcode's `bgcode` CLI if they're missing. The `bgcode` package is in Debian trixie+ and Ubuntu 24.04+.
+   - With root or passwordless `sudo`, it installs them with apt.
+   - Without either, it downloads the same `.deb`s with apt and unpacks them into `.deps/`, about 180 MB with LLVM. `bin/gcode-sheet` picks them up from there.
 2. Runs `npm ci`. `webgl-node` downloads a prebuilt `native-gles` addon.
 3. Renders the bundled fixture as a smoke test.
 
-On dnf-based distros it installs the Mesa packages only. Elsewhere, install the equivalents yourself and set `SKIP_SYSTEM_DEPS=1`. Plain `.gcode` works without `bgcode`. For `.bgcode`, put libbgcode's `bgcode` on `PATH` or point `BGCODE_BIN` at it. The headless EGL settings (`EGL_PLATFORM=surfaceless`, `GALLIUM_DRIVER=llvmpipe`, …) default inside the script, so you don't need a wrapper. `npm test` runs the parser tests.
+From scratch, setup takes about 5 s with root and about 15 s without. With system packages, `node gcode-sheet.mjs` works as well as `bin/gcode-sheet`: the headless EGL settings (`EGL_PLATFORM=surfaceless`, `GALLIUM_DRIVER=llvmpipe`, …) default inside the script.
+
+On dnf-based distros with root, it installs the Mesa packages only. Elsewhere, install the equivalents yourself and set `SKIP_SYSTEM_DEPS=1`. Plain `.gcode` works without `bgcode`. For `.bgcode`, put libbgcode's `bgcode` on `PATH` or point `BGCODE_BIN` at it. `npm test` runs the parser tests.
 
 ## Example Output
 

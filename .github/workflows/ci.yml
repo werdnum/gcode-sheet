@@ -28,7 +28,7 @@ jobs:
         run: nix flake check -L
 
   setup-script:
-    name: scripts/setup.sh without Nix (${{ matrix.runner }})
+    name: scripts/setup.sh without Nix (${{ matrix.runner }}${{ matrix.rootless && ', rootless' || '' }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -36,6 +36,9 @@ jobs:
         runner:
           - ubuntu-24.04
           - ubuntu-24.04-arm
+        rootless:
+          - false
+          - true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -47,6 +50,8 @@ jobs:
 
       - name: Run setup script
         run: scripts/setup.sh
+        env:
+          FORCE_ROOTLESS: ${{ matrix.rootless && '1' || '0' }}
 
       - name: Run tests
         run: npm test
