@@ -26,3 +26,19 @@ jobs:
 
       - name: Run nix flake check
         run: nix flake check -L
+
+      # Docker's default seccomp profile also blocks user namespaces, as many agent sandboxes do.
+      - name: Run the single-file bundle on distros without Nix
+        run: |
+          cp -L "$(nix build .#run --print-out-paths)" gcode-sheet.run
+          mkdir -m 777 out
+          for image in debian:bookworm-slim alpine:3.20; do
+            echo "::group::$image"
+            docker run --rm --network none --user 65534:65534 -e HOME=/tmp \
+              -v "$PWD:/w:ro" -v "$PWD/out:/out" "$image" \
+              /w/gcode-sheet.run /w/caliper-battery-cover-flatbase-0.1mm-black-pla-slot3.bgcode /out/caliper.png \
+              | tee summary.json
+            grep -q '"layers":29' summary.json
+            rm out/caliper.png
+            echo "::endgroup::"
+          done

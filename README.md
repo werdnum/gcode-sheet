@@ -29,11 +29,32 @@ nix run .#bun -- part.bgcode out.png
 nix run github:werdnum/gcode-sheet#bun -- part.bgcode out.png
 ```
 
-Run the flake test suite (checks parser regressions and the caliper `.bgcode` fixture under both runtimes, verifies the PNG dimensions, pixel count, and JSON summary, and compares decoded pixels and summaries between runtimes):
+Run the flake test suite (checks parser regressions and the caliper `.bgcode` fixture under both runtimes, verifies the PNG dimensions, pixel count, and JSON summary, compares decoded pixels and summaries between runtimes, and checks that the single-file bundle matches them):
 
 ```bash
 nix flake check -L
 ```
+
+## Without Nix: Single-File Download
+
+Each [release](https://github.com/werdnum/gcode-sheet/releases) attaches a self-contained executable for `x86_64` and `aarch64` Linux. It includes Node.js, Mesa `llvmpipe`, libbgcode and the libraries they load, glibc's dynamic loader among them. It works on any distro, including musl-based Alpine, and doesn't need Nix, root, user namespaces, FUSE or a GPU:
+
+```bash
+curl -fsSLo gcode-sheet https://github.com/werdnum/gcode-sheet/releases/latest/download/gcode-sheet-$(uname -m).run
+chmod +x gcode-sheet
+./gcode-sheet part.bgcode out.png
+```
+
+The download is about 110 MB. The first run unpacks it (~430 MB) into `$GCODE_SHEET_CACHE`, which defaults to `~/.cache/gcode-sheet`. That takes a few seconds; after that, startup costs nothing extra. The host only needs `sh`, `readlink`, `mktemp`, `head`, `tail` and `tar`, which busybox provides.
+
+The file is the flake's `run` output. `bundle` is the same thing as a plain directory:
+
+```bash
+nix build .#run      # result: the self-extracting executable
+nix build .#bundle   # result/gcode-sheet runs from any path
+```
+
+The bundle starts Node and `bgcode` through its own copy of glibc's dynamic loader with `--library-path`, and RPATHs are removed from the copied libraries. Every library therefore comes from inside the bundle, never from `/nix/store` or the host. `nix flake check` runs the self-extractor and fails if any library loads from outside it. It also checks that the result is pixel-identical to the Nix package's render.
 
 ## Example Output
 

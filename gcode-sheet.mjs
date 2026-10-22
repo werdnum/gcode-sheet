@@ -613,6 +613,12 @@ async function main() {
   console.info = (...a) => console.error(...a);
   const _warn = console.warn; console.warn = (...a) => { if (!String(a[0]).includes('WEBGL_multi_draw')) _warn(...a); };
 
+  // Headless Mesa llvmpipe defaults (the Nix wrapper sets the same); EGL reads these
+  // when webgl-node creates its display, so they must be set before the import.
+  for (const [k, v] of [['EGL_PLATFORM', 'surfaceless'], ['LIBGL_ALWAYS_SOFTWARE', '1'],
+    ['GALLIUM_DRIVER', 'llvmpipe'], ['LP_NUM_THREADS', '4']]) {
+    process.env[k] ??= v;
+  }
   const nativeGL = await import('webgl-node');
   for (const [k, v] of Object.entries(nativeGL)) if (k.startsWith('WebGL')) globalThis[k] = v;
   const {
