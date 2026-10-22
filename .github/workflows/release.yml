@@ -21,9 +21,9 @@ on:
 permissions:
   contents: write
 
-# One release at a time, so an older run can never finish last and become "latest".
-# GitHub keeps only the newest pending run: pushes that land while a release is
-# building are coalesced, and only the most recent of them is released.
+# One release at a time. GitHub keeps only the newest pending run, so pushes that land
+# while a release is building are coalesced and only the most recent is released.
+# Queue order isn't guaranteed, so the publish step also checks freshness itself.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -73,10 +73,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          latest=--latest
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             tag=$GITHUB_REF_NAME
           else
             tag=v1.0.$GITHUB_RUN_NUMBER
+            # Run numbers grow with each push. If a newer run has already published,
+            # this one is stale: release it, but leave "latest" (the download link) alone.
+            current=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+            case "$current" in
+              v1.0.*[!0-9]* | v1.0.) ;;
+              v1.0.*)
+                if [ "${current#v1.0.}" -gt "$GITHUB_RUN_NUMBER" ]; then
+                  echo "::notice::$current is newer than run $GITHUB_RUN_NUMBER; not marking $tag as latest"
+                  latest=--latest=false
+                fi ;;
+            esac
           fi
           gh release create "$tag" gcode-sheet-x86_64.run gcode-sheet-aarch64.run \
-            --target "$GITHUB_SHA" --title "$tag" --generate-notes --latest
+            --target "$GITHUB_SHA" --title "$tag" --generate-notes "$latest"
