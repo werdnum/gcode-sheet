@@ -1,0 +1,40 @@
+{
+  "name": "Prusa MK4",
+  "bed": {
+    "x": [0, 250],
+    "y": [0, 210],
+    "z_max": 220
+  },
+  "parts": [
+    {
+      "id": "nozzle",
+      "shape": "cylinder",
+      "r": 4,
+      "z": [0, 12],
+      "measured": false
+    },
+    {
+      "id": "extruder",
+      "shape": "cylinder",
+      "r": 45,
+      "z": [20, 120],
+      "measured": false
+    },
+    {
+      "id": "gantry",
+      "shape": "box",
+      "x": [-1000, 1000],
+      "y": [-30, 45],
+      "z": [20, 400],
+      "measured": false
+    }
+  ],
+  "park": {
+    "m600": {
+      "x": 0,
+      "y": 210,
+      "z_lift": 0
+    }
+  },
+  "change_cost_s": 120
+}

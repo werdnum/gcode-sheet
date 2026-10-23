@@ -3,10 +3,12 @@
 // Uses Three.js + webgl-node (native EGL/GLES on Mesa llvmpipe) with a streaming G-code
 // parser and direct compact tube geometry builder.
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
+import {
+  openGcodeFile,
+  tessellateArcPoints,
+  walkGcode,
+} from './lib/toolpath.mjs';
 
 const SLOTS = '#F67910,#F2F2F2,#8C8C8C,#7B2FBE,#9A9A9A'; // MMU slots T0..T4 (black lifted to grey)
 // Feature groups -> virtual tool index (max 8: T0..T7)
@@ -41,6 +43,8 @@ const { values, positionals } = parseArgs({
     lines: { type: 'boolean', default: false },
     light: { type: 'string', default: '0.6,1.2,1.5' }, // ambient,directional,brightness
     'end-layer': { type: 'string' },                   // render the 3D views cut at this layer
+    'end-line': { type: 'string' },                    // stop reading G-code at this 1-based line number
+    overlay: { type: 'string' },                       // JSON file with collision head overlay spec
     'extrusion-width': { type: 'string', default: '0.45' },
     'layer-height': { type: 'string', default: '0.2' },
   },
@@ -115,99 +119,6 @@ const MAX_CHUNK_INDICES = (MAX_CHUNK_PTS - 1) * 24;
 const EMPTY_F32 = new Float32Array(0);
 const EMPTY_I8 = new Int8Array(0);
 const EMPTY_U16 = new Uint16Array(0);
-
-const POW10 = [
-  1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9,
-  1e-10, 1e-11, 1e-12, 1e-13, 1e-14, 1e-15
-];
-
-function parseFastFloat(str, start, end) {
-  while (start < end && str.charCodeAt(start) <= 32) start++;
-  if (start >= end) return NaN;
-  let sign = 1;
-  let c = str.charCodeAt(start);
-  if (c === 45) { sign = -1; start++; }
-  else if (c === 43) { start++; }
-  let intPart = 0;
-  let hasDigits = false;
-  while (start < end) {
-    c = str.charCodeAt(start);
-    if (c >= 48 && c <= 57) {
-      intPart = intPart * 10 + (c - 48);
-      hasDigits = true;
-      start++;
-    } else break;
-  }
-  let fracPart = 0;
-  let fracLen = 0;
-  if (start < end && str.charCodeAt(start) === 46) {
-    start++;
-    while (start < end) {
-      c = str.charCodeAt(start);
-      if (c >= 48 && c <= 57) {
-        if (fracLen < 15) {
-          fracPart = fracPart * 10 + (c - 48);
-          fracLen++;
-        }
-        hasDigits = true;
-        start++;
-      } else break;
-    }
-  }
-  if (!hasDigits) return NaN;
-  if (start < end) {
-    c = str.charCodeAt(start) | 32;
-    if (c === 101) return parseFloat(str.slice(start, end));
-  }
-  return sign * (intPart + (fracLen > 0 ? fracPart * POW10[fracLen] : 0));
-}
-
-// Visit slices of one bounded read buffer at a time. Returning false stops early.
-function visitGcodeLines(file, visit) {
-  const fd = fs.openSync(file, 'r');
-  const readBuf = Buffer.allocUnsafe(256 * 1024);
-  let leftover = '';
-  try {
-    let bytesRead;
-    while ((bytesRead = fs.readSync(fd, readBuf, 0, readBuf.length, null)) > 0) {
-      const chunk = leftover + readBuf.toString('latin1', 0, bytesRead);
-      let start = 0;
-      let nl = chunk.indexOf('\n');
-      while (nl !== -1) {
-        let end = nl;
-        if (end > start && chunk.charCodeAt(end - 1) === 13) end--;
-        if (visit(chunk, start, end) === false) return;
-        start = nl + 1;
-        nl = chunk.indexOf('\n', start);
-      }
-      leftover = chunk.slice(start);
-    }
-    if (leftover.length) visit(leftover, 0, leftover.length);
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-function isLayerMarker(str, start, end) {
-  return (str.startsWith(';LAYER_CHANGE', start) &&
-      str.slice(start + 13, end).trim() === '') ||
-    (str.startsWith(';LAYER:', start) &&
-      /^\d+\s*$/.test(str.slice(start + 7, end)));
-}
-
-// A short preflight normally stops at the first layer. Markerless files need a
-// full streaming scan so their extrusion is never mistaken for a startup purge.
-function hasLayerMarkers(file) {
-  let found = false;
-  visitGcodeLines(file, (str, start, end) => {
-    while (start < end && str.charCodeAt(start) <= 32) start++;
-    if (isLayerMarker(str, start, end)) {
-      found = true;
-      return false;
-    }
-  });
-  return found;
-}
 
 class ToolChunkBuilder {
   constructor(tool, material, isLines, uploadChunk) {
@@ -562,33 +473,7 @@ function drawAnnotations(sheet, views, panelW, panelH, sheetCols, legendItems) {
 
 async function main() {
   const [input, output] = positionals;
-
-  // Detect .bgcode ('GCDE' magic) and decode via libbgcode CLI if needed
-  const magicBuf = Buffer.alloc(4);
-  const checkFd = fs.openSync(input, 'r');
-  try {
-    fs.readSync(checkFd, magicBuf, 0, 4, 0);
-  } finally {
-    fs.closeSync(checkFd);
-  }
-
-  let tmpDir = null;
-  let gcodePath = input;
-  if (magicBuf.toString('ascii') === 'GCDE') {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcode-sheet-'));
-    const tmpBgcode = path.join(tmpDir, 'part.bgcode');
-    const tmpGcode = path.join(tmpDir, 'part.gcode');
-    fs.symlinkSync(path.resolve(input), tmpBgcode);
-    const bgcodeBin = process.env.BGCODE_BIN || 'bgcode';
-    try {
-      execFileSync(bgcodeBin, [tmpBgcode], { stdio: 'pipe' });
-    } catch (err) {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-      throw new Error(`Failed to decode .bgcode using '${bgcodeBin}': ${err.stderr?.toString() || err.message}`);
-    }
-    try { fs.unlinkSync(tmpBgcode); } catch {}
-    gcodePath = tmpGcode;
-  }
+  const { gcodePath, cleanup: cleanupBgcode } = openGcodeFile(input);
 
   const stat = fs.statSync(gcodePath);
   const shell = values.detail === 'shell' || (values.detail === 'auto' && stat.size > 9e6);
@@ -623,7 +508,8 @@ async function main() {
   for (const [k, v] of Object.entries(nativeGL)) if (k.startsWith('WebGL')) globalThis[k] = v;
   const {
     Vector3, BufferGeometry, BufferAttribute, Mesh, LineSegments, Scene, Group, Color,
-    ShaderMaterial, WebGLRenderer, OrthographicCamera, Euler, Sphere, Box3
+    ShaderMaterial, MeshBasicMaterial, BoxGeometry, CylinderGeometry,
+    WebGLRenderer, OrthographicCamera, Euler, Sphere, Box3
   } = await import('three');
   const { PNG } = await import('pngjs');
 
@@ -747,21 +633,10 @@ async function main() {
   try {
     mem('before-parse');
 
-    let stateX = 0, stateY = 0, stateZ = 0, stateE = 0;
-    let shiftX = 0, shiftY = 0, shiftZ = 0;
-    let relE = false;
-    let relXYZ = false;
-    let unitScale = 1;
-    let physTool = 0;
     let featureIdx = 0;
-    let extWidth = defaultWidth;
-    let lineHeight = defaultHeight;
-    let inStart = !values['include-start'] && hasLayerMarkers(gcodePath);
     let inInterior = false;
     let inWipeTower = false;
-    let layer = 0;
-    let inLayerChangeHeader = false;
-    const layerZs = [];
+    let layerZs = [];
     const featuresSeen = new Set();
     const toolsSeen = new Set();
 
@@ -790,7 +665,7 @@ async function main() {
         if (dx < tr.minX) { tr.minX = dx; p[0] = X; p[1] = Y; p[2] = Z; }
         if (dx > tr.maxX) { tr.maxX = dx; p[3] = X; p[4] = Y; p[5] = Z; }
         if (dy < tr.minY) { tr.minY = dy; p[6] = X; p[7] = Y; p[8] = Z; }
-        if (dy > tr.maxY) { tr.maxY = dy; p[9] = X; p[10] = Y; p[11] = Z; }
+        if (dy > tr.maxY) { tr.minY = tr.minY; tr.maxY = dy; p[9] = X; p[10] = Y; p[11] = Z; }
       }
     };
 
@@ -834,293 +709,73 @@ async function main() {
       pathLen = 0;
     };
 
-    const ensureExtrusionPath = () => {
-      const colorIdx = byFeature ? featureIdx : physTool;
+    const ensureExtrusionPath = (st, sx, sy, sz) => {
+      const colorIdx = byFeature ? featureIdx : st.physTool;
       // Slot changes must be recorded even when the feature colour stays the same.
-      if (!inExtrusionPath || pathColorIdx !== colorIdx || pathPhysTool !== physTool || pathWidth !== extWidth || pathHeight !== lineHeight) {
+      if (!inExtrusionPath || pathColorIdx !== colorIdx || pathPhysTool !== st.physTool || pathWidth !== st.extWidth || pathHeight !== st.lineHeight) {
         finishExtrusionPath();
         inExtrusionPath = true;
         pathColorIdx = colorIdx;
-        pathPhysTool = physTool;
-        pathWidth = extWidth;
-        pathHeight = lineHeight;
-        pushPathPoint(stateX, stateY, stateZ);
+        pathPhysTool = st.physTool;
+        pathWidth = st.extWidth;
+        pathHeight = st.lineHeight;
+        pushPathPoint(sx, sy, sz);
       }
-      if (layer > 0 && Number.isNaN(layerZs[layer - 1])) {
-        layerZs[layer - 1] = stateZ;
+      if (st.layer > 0 && Number.isNaN(st.layerZs[st.layer - 1])) {
+        st.layerZs[st.layer - 1] = sz;
       }
     };
 
-    const applyExtrusion = (eVal) => {
-      if (eVal !== eVal) return 0;
-      if (relE) {
-        stateE += eVal;
-        return eVal;
-      }
-      const d = eVal - stateE;
-      stateE = eVal;
-      return d;
-    };
+    const endLineLimit = values['end-line'] ? parseInt(values['end-line'], 10) : Infinity;
 
-    const MAX_ARC_ANGLE = Math.PI / 8;
-    const tessellateArc = (cw, tx, ty, tz, iOff, jOff, rVal) => {
-      const sx = stateX, sy = stateY, sz = stateZ;
-      let r = iOff !== iOff ? 0 : iOff;
-      let a = jOff !== jOff ? 0 : jOff;
-      let u = false;
-      if (rVal === rVal && rVal !== 0) {
-        const D = tx - sx, Y = ty - sy;
-        const A = Math.sqrt((D * D + Y * Y) * 0.25);
-        const rad = Math.max(Math.abs(rVal), A);
-        const C = D * D + Y * Y;
-        const T = rad * rad - C * 0.25;
-        if (C === 0) u = true;
-        else {
-          let F = Math.sqrt(Math.max(0, T / C));
-          if (!cw) F = -F;
-          if (rVal < 0) F = -F;
-          r = D * 0.5 + Y * F;
-          a = Y * 0.5 - D * F;
-        }
-      }
-      const fullCircle = (sx === tx && sy === ty);
-      const cx = sx + r, cy = sy + a;
-      const g = Math.sqrt(r * r + a * a);
-      const y = Math.atan2(-a, -r);
-      const b = Math.atan2(ty - cy, tx - cx);
-      let x;
-      if (fullCircle) x = 2 * Math.PI;
-      else {
-        x = cw ? y - b : b - y;
-        if (x < 0) x += 2 * Math.PI;
-      }
-      const S = 2 * Math.acos(Math.max(1 - arcTol / g, -1));
-      const w = Math.min(S, MAX_ARC_ANGLE);
-      let steps = x / w;
-      if (steps < 1) steps = 1;
-      let P = (x / steps) * (cw ? -1 : 1);
-      const Z = (tz - sz) / steps;
-      let L = sz, W = y;
-      if (!u && g > 0 && Number.isFinite(steps)) {
-        for (let D = 0; D < steps - 1; D++) {
-          W += P;
-          L += Z;
-          pushPathPoint(cx + g * Math.cos(W), cy + g * Math.sin(W), L);
-        }
-      }
-      pushPathPoint(tx, ty, tz);
-    };
-
-    const parseLineSlice = (str, start, end) => {
-      while (start < end && str.charCodeAt(start) <= 32) start++;
-      if (start >= end) return;
-      const c0 = str.charCodeAt(start);
-
-      if (c0 === 59) {
-        const len = end - start;
-        if (isLayerMarker(str, start, end)) {
+    try {
+      const walked = walkGcode(gcodePath, {
+        includeStart: Boolean(values['include-start']),
+        defaultWidth,
+        defaultHeight,
+        numUserToolColors,
+        endLineLimit,
+      }, {
+        onLayerChange(_lineNo, _rawLine, st) {
+          layerZs = st.layerZs;
           finishExtrusionPath();
-          inStart = false;
           inWipeTower = false;
-          layer++;
-          layerZs.push(NaN);
-          inLayerChangeHeader = true;
-          return;
-        }
-        if (inLayerChangeHeader && len > 3 && str.startsWith(';Z:', start)) {
-          const z = parseFastFloat(str, start + 3, end);
-          if (z === z && layerZs.length > 0) layerZs[layerZs.length - 1] = z;
-          return;
-        }
-        if (len > 8 && str.startsWith(';HEIGHT:', start)) {
-          const h = parseFastFloat(str, start + 8, end);
-          if (h > 0) lineHeight = h;
-          return;
-        }
-        if (len > 7 && str.startsWith(';WIDTH:', start)) {
-          const w = parseFastFloat(str, start + 7, end);
-          if (w > 0) extWidth = w;
-          return;
-        }
-        if (len > 6 && str.startsWith(';TYPE:', start)) {
-          inLayerChangeHeader = false;
-          const t = str.slice(start + 6, end).trim();
-          inInterior = shell && layer > 1 && INTERIOR.has(t);
+        },
+        onType(_lineNo, t, _rawLine, st) {
+          inInterior = shell && st.layer > 1 && INTERIOR.has(t);
           inWipeTower = (t === 'Wipe tower');
           if (byFeature) {
             featureIdx = TYPE_TO_TOOL.has(t) ? TYPE_TO_TOOL.get(t) : 7;
           }
-          return;
-        }
-        return;
-      }
-
-      if (c0 === 77 && end - start >= 4 && str.charCodeAt(start + 1) === 55 && str.charCodeAt(start + 2) === 51 && str.charCodeAt(start + 3) === 32) {
-        return;
-      }
-
-      let cmdEnd = end;
-      for (let i = start; i < end; i++) {
-        if (str.charCodeAt(i) === 59) { cmdEnd = i; break; }
-      }
-      let pos = start;
-      while (pos < cmdEnd && str.charCodeAt(pos) <= 32) pos++;
-      if (pos >= cmdEnd) return;
-
-      const firstChar = str.charCodeAt(pos) | 32;
-      pos++;
-      const numStart = pos;
-      while (pos < cmdEnd) {
-        const ch = str.charCodeAt(pos);
-        if ((ch >= 48 && ch <= 57) || ch === 46) pos++;
-        else break;
-      }
-      if (pos === numStart) return;
-      const cmdNum = parseFastFloat(str, numStart, pos);
-
-      if (firstChar === 103 && (cmdNum === 0 || cmdNum === 1 || cmdNum === 2 || cmdNum === 3)) {
-        inLayerChangeHeader = false;
-        let px = NaN, py = NaN, pz = NaN, pe = NaN, pi = NaN, pj = NaN, pr = NaN;
-        while (pos < cmdEnd) {
-          const ch = str.charCodeAt(pos) | 32;
-          if (ch >= 97 && ch <= 122) {
-            pos++;
-            const vStart = pos;
-            while (pos < cmdEnd) {
-              const vc = str.charCodeAt(pos);
-              if ((vc >= 97 && vc <= 122) || (vc >= 65 && vc <= 90)) break;
-              pos++;
-            }
-            if (ch === 120) px = parseFastFloat(str, vStart, pos);
-            else if (ch === 121) py = parseFastFloat(str, vStart, pos);
-            else if (ch === 122) pz = parseFastFloat(str, vStart, pos);
-            else if (ch === 101) pe = parseFastFloat(str, vStart, pos);
-            else if (ch === 105) pi = parseFastFloat(str, vStart, pos);
-            else if (ch === 106) pj = parseFastFloat(str, vStart, pos);
-            else if (ch === 114) pr = parseFastFloat(str, vStart, pos);
-          } else {
-            pos++;
-          }
-        }
-
-        // Keep machine/extruder state even when the path is hidden.
-        const dE = applyExtrusion(pe * unitScale);
-        const isArc = cmdNum === 2 || cmdNum === 3;
-        const hasArc = isArc && (pi === pi || pj === pj || pr === pr);
-        if (px !== px && py !== py && pz !== pz && !hasArc) {
+        },
+        onPureExtrudeOrFeed() {
           finishExtrusionPath();
-          return;
-        }
-
-        const nx = px !== px ? stateX : px * unitScale + (relXYZ ? stateX : shiftX);
-        const ny = py !== py ? stateY : py * unitScale + (relXYZ ? stateY : shiftY);
-        const nz = pz !== pz ? stateZ : pz * unitScale + (relXYZ ? stateZ : shiftZ);
-        const isExt = dE > 0 && !inStart && !inInterior;
-
-        if (cmdNum === 0 || cmdNum === 1) {
-          if (isExt) {
-            ensureExtrusionPath();
-            stateX = nx; stateY = ny; stateZ = nz;
+        },
+        onLinearMove(_lineNo, _cmdNum, sx, sy, sz, nx, ny, nz, _dE, isExt, _entry, _layerZ, _raw, st) {
+          layerZs = st.layerZs;
+          if (isExt && !inInterior) {
+            ensureExtrusionPath(st, sx, sy, sz);
             pushPathPoint(nx, ny, nz);
           } else {
             finishExtrusionPath();
-            stateX = nx; stateY = ny; stateZ = nz;
           }
-        } else {
-          if (isExt) {
-            ensureExtrusionPath();
-            tessellateArc(cmdNum === 2, nx, ny, nz, pi * unitScale, pj * unitScale, pr * unitScale);
-            stateX = nx; stateY = ny; stateZ = nz;
+        },
+        onArcMove(_lineNo, cmdNum, sx, sy, sz, nx, ny, nz, iScaled, jScaled, rScaled, _dE, isExt, _entry, _layerZ, _raw, st) {
+          layerZs = st.layerZs;
+          if (isExt && !inInterior) {
+            ensureExtrusionPath(st, sx, sy, sz);
+            tessellateArcPoints(cmdNum === 2, sx, sy, sz, nx, ny, nz, iScaled, jScaled, rScaled, arcTol, pushPathPoint);
           } else {
             finishExtrusionPath();
-            stateX = nx; stateY = ny; stateZ = nz;
           }
-        }
-        return;
-      }
-
-      if (firstChar === 116) {
-        if (cmdNum >= 0 && cmdNum <= 7) {
-          physTool = cmdNum | 0;
-        }
-        return;
-      }
-
-      if (firstChar === 109) {
-        if (cmdNum === 82) relE = false;
-        else if (cmdNum === 83) relE = true;
-        else if (cmdNum === 600 && !inStart) {
-          let explicitT = NaN;
-          while (pos < cmdEnd) {
-            const ch = str.charCodeAt(pos) | 32;
-            if (ch >= 97 && ch <= 122) {
-              pos++;
-              const vStart = pos;
-              while (pos < cmdEnd) {
-                const vc = str.charCodeAt(pos);
-                if ((vc >= 97 && vc <= 122) || (vc >= 65 && vc <= 90)) break;
-                pos++;
-              }
-              if (ch === 116) explicitT = parseFastFloat(str, vStart, pos);
-            } else pos++;
-          }
-          if (explicitT >= 0 && explicitT <= 7) physTool = explicitT | 0;
-          else physTool = (physTool + 1) % numUserToolColors;
-        }
-        return;
-      }
-
-      if (firstChar === 103) {
-        if (cmdNum === 20) unitScale = 25.4;
-        else if (cmdNum === 21) unitScale = 1;
-        else if (cmdNum === 90) relXYZ = false;
-        else if (cmdNum === 91) relXYZ = true;
-        else if (cmdNum === 28) {
+        },
+        onHome() {
           finishExtrusionPath();
-          stateX = 0; stateY = 0; stateZ = 0;
-        } else if (cmdNum === 92) {
-          let px = NaN, py = NaN, pz = NaN, pe = NaN, anyParam = false;
-          while (pos < cmdEnd) {
-            const ch = str.charCodeAt(pos) | 32;
-            if (ch >= 97 && ch <= 122) {
-              pos++;
-              const vStart = pos;
-              while (pos < cmdEnd) {
-                const vc = str.charCodeAt(pos);
-                if ((vc >= 97 && vc <= 122) || (vc >= 65 && vc <= 90)) break;
-                pos++;
-              }
-              const val = parseFastFloat(str, vStart, pos);
-              if (val === val) {
-                anyParam = true;
-                if (ch === 120) px = val;
-                else if (ch === 121) py = val;
-                else if (ch === 122) pz = val;
-                else if (ch === 101) pe = val;
-              }
-            } else pos++;
-          }
-          if (!anyParam) {
-            shiftX = stateX; shiftY = stateY; shiftZ = stateZ; stateE = 0;
-          } else {
-            if (px === px) shiftX = stateX - px * unitScale;
-            if (py === py) shiftY = stateY - py * unitScale;
-            if (pz === pz) shiftZ = stateZ - pz * unitScale;
-            if (pe === pe) stateE = pe * unitScale;
-          }
-        } else if (cmdNum === 92.1) {
-          shiftX = 0; shiftY = 0; shiftZ = 0;
-        }
-      }
-    };
-
-    try {
-      visitGcodeLines(gcodePath, parseLineSlice);
+        },
+      });
+      layerZs = walked.layerZs;
     } finally {
-      if (tmpDir) {
-        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
-        tmpDir = null;
-      }
+      cleanupBgcode();
     }
 
     finishExtrusionPath();
@@ -1133,6 +788,76 @@ async function main() {
     mem('after-build');
 
     if (meshes.length === 0) throw new Error('No extrusion paths found.');
+
+    const overlaySpec = values.overlay ? JSON.parse(fs.readFileSync(values.overlay, 'utf8')) : null;
+    if (overlaySpec && overlaySpec.event && overlaySpec.profile) {
+      const ev = overlaySpec.event;
+      const prof = overlaySpec.profile;
+      const [nx, ny] = ev.nozzle;
+      const nz = ev.z;
+      const xLoBound = Math.min(mnX, nx - 45) - 10;
+      const xHiBound = Math.max(mxX, nx + 45) + 10;
+      const zCap = Math.max(mxZ, ev.deposited_top || 0, nz + 30) + 10;
+
+      for (const part of prof.parts || []) {
+        const isHit = part.id === ev.part;
+        const z0 = nz + part.z[0];
+        const z1 = Math.min(nz + part.z[1], Math.max(z0 + 4, zCap));
+        const h = z1 - z0;
+        const cz = z0 + h * 0.5;
+        let geom;
+        let cx = nx, cy = ny;
+        if (part.shape === 'cylinder') {
+          geom = new CylinderGeometry(part.r, part.r, h, 32);
+          geom.rotateX(Math.PI / 2);
+          recordFitPoint(nx - part.r, ny - part.r, z0);
+          recordFitPoint(nx + part.r, ny + part.r, z1);
+        } else {
+          const bx0 = Math.max(nx + part.x[0], xLoBound);
+          const bx1 = Math.min(nx + part.x[1], xHiBound);
+          const by0 = ny + part.y[0];
+          const by1 = ny + part.y[1];
+          const bw = Math.max(1, bx1 - bx0);
+          const bd = Math.max(1, by1 - by0);
+          cx = (bx0 + bx1) * 0.5;
+          cy = (by0 + by1) * 0.5;
+          geom = new BoxGeometry(bw, bd, h);
+          recordFitPoint(bx0, by0, z0);
+          recordFitPoint(bx1, by1, z1);
+        }
+        const mat = new MeshBasicMaterial({
+          color: new Color(isHit ? '#EF4444' : '#64748B'),
+          transparent: true,
+          opacity: isHit ? 0.45 : 0.22,
+          depthWrite: false,
+        });
+        const mesh = new Mesh(geom, mat);
+        mesh.position.set(cx, cy, cz);
+        mesh.frustumCulled = false;
+        mesh.userData.minZ = z0;
+        mesh.userData.maxZ = z1;
+        extrusionsGroup.add(mesh);
+        meshes.push(mesh);
+      }
+
+      if (Array.isArray(ev.hit_cell) && ev.deposited_top > 0) {
+        const g = overlaySpec.grid || 1.0;
+        const hGeom = new BoxGeometry(g * 2, g * 2, ev.deposited_top);
+        const hMat = new MeshBasicMaterial({
+          color: new Color('#DC2626'),
+          transparent: true,
+          opacity: 0.85,
+        });
+        const hMesh = new Mesh(hGeom, hMat);
+        hMesh.position.set(ev.hit_cell[0] + g * 0.5, ev.hit_cell[1] + g * 0.5, ev.deposited_top * 0.5);
+        hMesh.frustumCulled = false;
+        hMesh.userData.minZ = ev.deposited_top;
+        hMesh.userData.maxZ = ev.deposited_top;
+        extrusionsGroup.add(hMesh);
+        meshes.push(hMesh);
+      }
+    }
+
     let activeTrackers = viewTrackers;
     if (mnX > mxX) {
       mnX = allMnX; mnY = allMnY; mnZ = allMnZ;
@@ -1205,6 +930,9 @@ async function main() {
     const legendItems = byFeature
       ? sortedFeatures.map(i => ({ label: FEATURE_GROUPS[i][0], color: FEATURE_GROUPS[i][2] }))
       : tools.map(t => ({ label: `T${t}`, color: palette[t] }));
+    if (overlaySpec && overlaySpec.event) {
+      legendItems.push({ label: `Hit: ${overlaySpec.event.part}`, color: '#EF4444' });
+    }
 
     if (!values['no-labels']) {
       drawAnnotations(sheet, views, panelW, panelH, sheetCols, legendItems);
@@ -1228,9 +956,7 @@ async function main() {
       },
     }));
   } finally {
-    if (tmpDir) {
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
-    }
+    cleanupBgcode();
     try {
       for (const m of meshes) m.geometry.dispose();
       for (const mat of materials) if (mat) mat.dispose();

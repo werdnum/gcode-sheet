@@ -5,7 +5,9 @@
   "type": "module",
   "license": "MIT",
   "bin": {
-    "gcode-sheet": "./gcode-sheet.mjs"
+    "gcode-sheet": "./gcode-sheet.mjs",
+    "gcode-collide": "./gcode-collide.mjs",
+    "gcode-sequence": "./gcode-sequence.mjs"
   },
   "dependencies": {
     "pngjs": "7.0.0",

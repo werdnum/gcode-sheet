@@ -184,3 +184,58 @@ See [runtime and PNG encoding measurements](docs/performance.md) for comparisons
 | Medium 4× Benchy (Before) | Medium 4× Benchy (After) |
 |---|---|
 | ![Medium before](docs/medium-before.png) | ![Medium after](docs/medium-after.png) |
+
+## Print-Head Collision Checker (`gcode-collide`)
+
+`gcode-collide` checks a sliced `.gcode` or `.bgcode` file against a 3D printer head geometry profile (`profiles/mk4.json` by default) to detect collisions between any already-deposited material and the moving nozzle, extruder body, or X gantry beam (including `G28` homing and `M600` filament-change park moves).
+
+```bash
+node gcode-collide.mjs plate.bgcode --printer mk4 --grid 1.0 --margin 0.5 --png collision.png
+# Or via Nix:
+nix run .#collide -- plate.bgcode --png collision.png
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--printer NAME\|PATH` | `mk4` | Built-in profile (`mk4`) or path to a custom JSON/YAML printer profile |
+| `--grid MM` | `1.0` | Deposited-material height-map grid resolution in mm |
+| `--margin MM` | `0.5` | Horizontal safety margin added to deposited widths in mm |
+| `--json PATH` | *(stdout)* | Also write the JSON collision report to `PATH` |
+| `--png PATH` | *(none)* | Render the deposited geometry up to the first collision with the offending head parts overlaid |
+
+Exit status: `0` = no collision, `1` = collision detected, `2` = error.
+
+### Library Interface
+
+```js
+import { loadToolpath, loadProfile, DepositStore, checkMoves } from './lib/collide.mjs';
+
+const profile = loadProfile('mk4');
+const path = loadToolpath('plate.bgcode');
+const store = new DepositStore(profile, { grid: 1 });
+store.paint(path.movesOf(objectA));
+const hits = checkMoves(profile, store, path.movesOf(objectB));
+```
+
+## Multicolour Sequential Planner (`gcode-sequence`)
+
+`gcode-sequence` takes a normal layer-interleaved multi-object G-code / `.bgcode` slice (sliced with PrusaSlicer's **Label objects** enabled) and a colour assignment per object, decomposes objects into whole objects or Z-height bands (`--split-at`), solves for the collision-free print order that minimizes `M600` filament changes and inter-chunk travel, emits a normalised (`G21`, `G90`, `M83`) G-code file preserving all non-motion printer state, and verifies the emitted G-code with `gcode-collide`.
+
+```bash
+node gcode-sequence.mjs plate.gcode -o sequenced.gcode --colours red,blue,red --split-at 20
+# Or via Nix:
+nix run .#sequence -- plate.gcode -o sequenced.gcode --colours ObjA=red,ObjB=blue --split-at 20
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `-o`, `--output PATH` | *(none)* | Write the resequenced G-code to `PATH` |
+| `--printer NAME\|PATH` | `mk4` | Built-in profile (`mk4`) or path to a custom JSON/YAML printer profile |
+| `--colours SPEC` | *(from tool)* | Colour per object (`c1,c2,...` by object index or `ObjA=c1,ObjB=c2`) |
+| `--split-at HEIGHTS` | *(none)* | Comma-separated Z split heights in mm (e.g. `20` or `clearance`) |
+| `--grid MM` | `1.0` | Deposited-material grid resolution in mm |
+| `--margin MM` | `0.5` | Horizontal safety margin in mm |
+| `--json [PATH]` | *(stdout)* | Also write the JSON sequencing report to `PATH` |
+
+Exit status: `0` = feasible & verified collision-free, `1` = infeasible plate (prints conflict diagnostics), `2` = error.
+
