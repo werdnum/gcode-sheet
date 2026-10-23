@@ -137,26 +137,36 @@ is a refactor-only PR with pixel-identical output as the acceptance test.
 (default 1 mm → 250×210 = 52 500 cells for the MK4) holding, per cell:
 
 - `top`: highest Z deposited so far;
-- `bottom`: lowest Z deposited so far (lets a bridge or a part printed on a
-  raft be distinguished from a solid column; the first version treats
-  `[bottom, top]` as solid);
 - `object`: id of the last object that deposited there.
 
-Rasterising an extruding move widens the segment by half the extrusion width
-plus `--margin` and paints every cell it crosses. This is conservative: it can
-over-report by at most one grid cell plus the margin, never under-report.
-If false positives from true overhangs matter later, the per-cell record can
-become a short list of Z intervals without changing the query interface.
+The first version models every painted cell as a **solid column from the bed
+to `top`**. Rasterising an extruding move widens the segment by half the
+extrusion width plus `--margin` and paints every cell it crosses. Both
+choices are conservative: the tool can over-report (by one grid cell plus
+the margin, and under a bridge or overhang printed over empty space) but
+never under-report. The refinement for overhangs is described under the
+query below; it is not a per-cell `bottom` value, which cannot be combined
+with a max-dilated map.
 
 **3. Collision query.** For every move (extruding or travel) the walker
 samples the nozzle position at most once per grid cell along the segment, and
 for every head part asks: *does any cell in the part's footprint around the
-nozzle have deposited material above `z + part.z_lo` and below
-`z + part.z_hi`?*
+nozzle have deposited material above `z + part.z_lo`?* Under the solid-column
+model that is the complete test: a column that reaches above the part's
+lower edge necessarily occupies the band `[z + z_lo, z + z_hi]`, because
+nothing deposited is above the nozzle except material that was printed
+earlier at a greater height, and columns are contiguous from the bed.
 
 Naively that is footprint-area work per sample. Instead the store maintains,
 per part, a **dilated top map**: `dilated[p][cell] = max(top over the part's
 footprint centred on cell)`. Then a sample is one lookup and one comparison.
+
+If overhangs and bridges ever need to stop over-reporting, the refinement is
+a **Z-slab occupancy**: the store keeps, for each slab of (say) 5 mm, the
+dilated map of material *within that slab*, and a query tests only the slabs
+that overlap `[z + z_lo, z + z_hi]`. That keeps the one-lookup-per-slab
+shape and answers the real interval-overlap question; a per-cell `bottom`
+cannot, because a max-dilation discards which cell contributed the top.
 The dilated maps are kept incremental: painting a cell updates the dilated
 values in its neighbourhood (a 45 mm radius disc is ~6 400 cells, but a cell
 is painted once per layer, so the whole print costs on the order of
@@ -253,14 +263,38 @@ n² phase-1 checks, each sub-second, and chunks of the same object are forced
 into Z order.
 
 The moves tested for chunk j are not only its extrusion moves but the **glue
-moves** the re-sequencer will add: lift to a safe travel height, move over
-the chunk, descend, and, where a colour change precedes it, the park move.
-The safe height is the maximum deposited top plus the nozzle part height, so
-a travel at that height is collision-free for every part (raising the nozzle
-raises the gantry with it). The descent is the dangerous move: with a tall
-neighbour in the gantry's Y band, dropping the nozzle back to a low layer of a
-short object collides even though the travel did not. The matrix captures
-this because the glue moves are included in `moves(j)`.
+moves** the re-sequencer will add. For the pairwise matrix to be exact, every
+glue move must depend only on the chunk it belongs to, never on which chunk
+came before. The glue is therefore designed around a **safe plane**:
+
+- *Safe height* `H(S)` for a deposited set S is `min(z_max, max top of S +
+  margin)`. It is monotone in S. Raising the nozzle only moves every part's
+  band upward, away from material, so a vertical lift from any
+  collision-free position is collision-free, and a horizontal move at `H`
+  clears every part whose band starts at or above the tip. The cap at
+  `z_max` means a plate whose tallest finished chunk reaches the Z limit
+  gets a travel that grazes it; such transitions are not assumed safe but
+  checked like any other move, and rejected if they hit.
+- *Chunk j's moves* are: a vertical **descent** from `H` at j's first point,
+  j's extrusion moves verbatim, and a vertical **lift** back to `H` at j's
+  last point. The horizontal travel between chunk i's lift and chunk j's
+  descent happens at `H` and belongs to neither chunk; it is safe by the
+  argument above and is verified again in the final pass.
+- *Colour changes* are issued at `H` over the plate's free corner (profile
+  `park`): travel at `H` to the park XY, `M600`, return at `H`. The
+  firmware's own park and unload motion is modelled as a move set from the
+  profile and checked once per deposited set rather than per transition; if
+  the firmware does not lift and parks across the bed at the current Z, this
+  is the move that fails next to a tall finished part, and the report says
+  so.
+
+With that structure, `ok[i][j]` evaluates `moves(j)` (descent, extrusion,
+lift) against `store(i)` with `H = H({i, j})`. In a real order the descent
+starts from the larger `H(S)`, but the extra segment is above every deposited
+top and adds no risk, so the pairwise check is exact for the solid-column
+model. The descent is the dangerous move: with a tall neighbour in the
+gantry's Y band, dropping the nozzle back to a low layer of a short object
+collides even though the travel did not.
 
 Diagnostics when no order exists: report the pair(s) with `ok[i][j]` and
 `ok[j][i]` both false and the part/height involved, so the user can move the
@@ -300,16 +334,22 @@ precedence over at most a few dozen chunks.
 
 Emit the original header and start G-code, then for each chunk in order:
 
-1. If the colour differs from the previous chunk: lift to safe height, emit
-   `M600` (or the profile's change macro), and the park move is checked as
-   part of the matrix.
-2. Lift to safe height, travel to the chunk's first point, descend, restore
+1. If the colour differs from the previous chunk: at safe height, travel to
+   the park XY, emit `M600` (or the profile's change macro), return.
+2. Travel at safe height to the chunk's first point, descend, restore
    `;Z:`/`;LAYER_CHANGE` markers so the printer's progress display and
    `gcode-sheet` still work.
-3. Copy the chunk's layer blocks verbatim (retract/unretract state carried
-   across because the walker tracks E and the cut points are at
-   `; printing object` boundaries, where PrusaSlicer has already retracted).
-4. Skirt/brim, purge line and wipe tower blocks (which belong to no object)
+3. Emit the chunk's moves **from the walker's normalised state, not by
+   copying text**: absolute XYZ (`G90`) and relative E (`M83`), with the
+   original feedrates, comments and markers carried through. Files sliced
+   with absolute E (`M82`) or relative XYZ (`G91`) blocks are only correct in
+   their original order, so the emitter rebases them: E becomes relative, and
+   any `G91` segment is re-expressed as absolute targets. Retraction state is
+   carried across cut points because they fall on `; printing object`
+   boundaries, where PrusaSlicer has already retracted; the emitter asserts
+   this and refuses a file where a boundary lands mid-extrusion.
+4. Lift to safe height at the chunk's last point.
+5. Skirt/brim, purge line and wipe tower blocks (which belong to no object)
    are printed first at their original heights, since they are all first-layer
    or below the clearance; a wipe tower taller than the clearance makes the
    file unsuitable and is reported.
@@ -356,7 +396,7 @@ same glue-move generator so the two cannot drift.
   absent.
 - **Solid-column assumption** in the deposit store over-reports for bridges
   and overhangs printed over empty space; acceptable for a safety tool, and
-  the per-cell interval list is the escape hatch.
+  the Z-slab occupancy maps are the escape hatch.
 - **Thermal effects** of printing a tall part next to a long-cooled one
   (adhesion, re-warming) are not modelled; the tool orders for collisions and
   time only.
