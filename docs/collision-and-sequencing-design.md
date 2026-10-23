@@ -136,10 +136,11 @@ disagreements appear, and a small number of physical confirmations:
    decides the same question more conservatively, so its accept/reject
    verdict is recorded alongside ours as a cross-check and every
    disagreement is explained in the test.
-3. **Property tests** that hold whatever the implementation: a single-object
-   print never collides; adding deposited material never removes a
-   collision; a finer grid or smaller margin never adds one; collapsed
-   events cover exactly the lines the reference flags.
+3. **Property tests** that hold whatever the implementation: a print whose
+   nozzle never drops below the deposited top never collides; adding
+   deposited material never removes a collision; halving the grid or
+   shrinking the margin never adds one; collapsed events cover exactly the
+   lines the reference flags.
 4. **Physical confirmation.** The two-cube front/back plate printed on the
    MK4 at the predicted boundary distance, which is also how the gantry
    measurements get confirmed, and a deliberately colliding plate stopped
