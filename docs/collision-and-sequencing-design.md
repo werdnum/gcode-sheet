@@ -86,7 +86,7 @@ pass if the Y gap exceeds the gantry's reach in that direction.
 
 ```
 gcode-collide part.bgcode --printer mk4 [--grid 1.0] [--margin 0.5]
-              [--json out.json] [--png out.png] [--fail-on-collision]
+              [--json out.json] [--png out.png]
 ```
 
 Output is a JSON report on stdout (the `gcode-sheet` convention) and exit
@@ -120,8 +120,8 @@ built around a reference it can be compared with, a test set that grows as
 disagreements appear, and a small number of physical confirmations:
 
 1. **Reference implementation first.** A deliberately naive checker: voxelise
-   the deposited toolpath, and for every sampled head position intersect
-   each head part's volume with the voxels by brute force. It is slow and
+   the deposited toolpath, and for every move intersect the volume each
+   head part sweeps along it with the voxels by brute force. It is slow and
    obviously correct, and it is what the fast version is tested against on
    every fixture and on random toolpaths. Any optimisation (a height map,
    dilated footprints, incremental updates, coarser sampling) is accepted
@@ -197,9 +197,10 @@ and a rewritten G-code file that phase 1 reports as collision-free.
 
 A **chunk** is an object, or an object's Z band when a tall object is split
 at the clearance height so that all the short bottoms can be printed in any
-colour grouping and only the tall tops need sequencing. Print time of a chunk
-does not depend on order, so the order only changes the number of filament
-changes (dominant) and the travel between chunks (tie-breaker).
+colour grouping and only the tall tops need sequencing; an object's chunks
+are always printed in Z order. Print time of a chunk does not depend on
+order, so the order only changes the number of filament changes (dominant)
+and the travel between chunks (tie-breaker).
 
 ### Approach
 
