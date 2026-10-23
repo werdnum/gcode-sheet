@@ -112,84 +112,57 @@ through a neighbour reports one incident, not ten thousand. `--png` renders
 the deposited geometry with the offending head position overlaid, using the
 existing Three.js/llvmpipe path.
 
-### Components
+### Approach
 
-**1. Toolpath walker (shared with `gcode-sheet`).** Extract the parser inside
-`main()` of `gcode-sheet.mjs` (`visitGcodeLines`, `parseFastFloat`, the
-G0/G1/G2/G3 handling with arc interpolation, absolute/relative E and
-coordinates, `.bgcode` decoding via `bgcode`) into `lib/toolpath.mjs` that
-emits a stream of moves: `{ line, x0,y0,z0, x1,y1,z1, extruding, feedrate,
-layer, object, type }`. It also tracks the markers the collision tool needs:
+Phase 1 has a weaker oracle than phase 2: nothing else will tell us whether
+a G-code file hits the gantry except the printer itself. So the checker is
+built around a reference it can be compared with, a test set that grows as
+disagreements appear, and a small number of physical confirmations:
 
-- `;LAYER_CHANGE` / `;Z:` (already parsed);
-- `; printing object <name> id:N copy:M` / `; stop printing object ...`
-  (PrusaSlicer *Label objects*; required for per-object attribution and for
-  phase 2's chunking — the tool warns when absent and treats the file as one
-  object);
-- `M600`, `T<n>`, `M601`/`M0`/pause: filament-change and pause events, which
-  are modelled as a move to the profile's park position;
-- `G28`, `G92`, `M82/M83`, `G90/G91`: homing and coordinate-mode state.
+1. **Reference implementation first.** A deliberately naive checker: voxelise
+   the deposited toolpath, and for every sampled head position intersect
+   each head part's volume with the voxels by brute force. It is slow and
+   obviously correct, and it is what the fast version is tested against on
+   every fixture and on random toolpaths. Any optimisation (a height map,
+   dilated footprints, incremental updates, coarser sampling) is accepted
+   only while it matches the reference or is provably more conservative
+   than it.
+2. **Fixture set with expected verdicts.** Sliced with PrusaSlicer's CLI from
+   `bench/mk4.ini`: tall cubes side by side in X with sequential printing
+   (collision), front and back far apart (none), front and back close
+   enough that only one order works, short cubes side by side (none), a
+   normal interleaved multi-object plate (none), and the repo's real MMU and
+   large fixtures (none). PrusaSlicer's own sequential-print validation
+   decides the same question more conservatively, so its accept/reject
+   verdict is recorded alongside ours as a cross-check and every
+   disagreement is explained in the test.
+3. **Property tests** that hold whatever the implementation: a single-object
+   print never collides; adding deposited material never removes a
+   collision; raising the head never adds one; a finer grid or smaller
+   margin never adds one; collapsed events cover exactly the lines the
+   reference flags.
+4. **Physical confirmation.** The two-cube front/back plate printed on the
+   MK4 at the predicted boundary distance, which is also how the gantry
+   measurements get confirmed, and a deliberately colliding plate stopped
+   by hand just before contact.
 
-`gcode-sheet` keeps its behaviour and tests; it just consumes the module. This
-is a refactor-only PR with pixel-identical output as the acceptance test.
+The implementation choices (the deposited-material representation, how
+head footprints are looked up, how overhangs are treated, how homing, park
+and filament-change moves are modelled) are settled against the reference
+and the fixtures during development rather than here. The one fixed
+decision is that the tool errs conservative: it may over-report and must
+never under-report relative to the reference.
 
-**2. Deposited-geometry store.** A 2-D grid over the bed at `--grid` mm
-(default 1 mm → 250×210 = 52 500 cells for the MK4) holding, per cell:
+### Shared toolpath reader
 
-- `top`: highest Z deposited so far;
-- `object`: id of the last object that deposited there.
-
-The first version models every painted cell as a **solid column from the bed
-to `top`**. Rasterising an extruding move widens the segment by half the
-extrusion width plus `--margin` and paints every cell it crosses. Both
-choices are conservative: the tool can over-report (by one grid cell plus
-the margin, and under a bridge or overhang printed over empty space) but
-never under-report. The refinement for overhangs is described under the
-query below; it is not a per-cell `bottom` value, which cannot be combined
-with a max-dilated map.
-
-**3. Collision query.** For every move (extruding or travel) the walker
-samples the nozzle position at most once per grid cell along the segment, and
-for every head part asks: *does any cell in the part's footprint around the
-nozzle have deposited material above `z + part.z_lo`?* Under the solid-column
-model that is the complete test: a column that reaches above the part's
-lower edge necessarily occupies the band `[z + z_lo, z + z_hi]`, because
-nothing deposited is above the nozzle except material that was printed
-earlier at a greater height, and columns are contiguous from the bed.
-
-Naively that is footprint-area work per sample. Instead the store maintains,
-per part, a **dilated top map**: `dilated[p][cell] = max(top over the part's
-footprint centred on cell)`. Then a sample is one lookup and one comparison.
-
-If overhangs and bridges ever need to stop over-reporting, the refinement is
-a **Z-slab occupancy**: the store keeps, for each slab of (say) 5 mm, the
-dilated map of material *within that slab*, and a query tests only the slabs
-that overlap `[z + z_lo, z + z_hi]`. That keeps the one-lookup-per-slab
-shape and answers the real interval-overlap question; a per-cell `bottom`
-cannot, because a max-dilation discards which cell contributed the top.
-The dilated maps are kept incremental: painting a cell updates the dilated
-values in its neighbourhood (a 45 mm radius disc is ~6 400 cells, but a cell
-is painted once per layer, so the whole print costs on the order of
-`layers × cells painted × neighbourhood`; for the gantry the footprint is a
-full-width Y band so its map is one dimension, `dilatedGantry[y]`, and updates
-are a 75-entry loop). A benchy-sized file checks in seconds; a full 4-object
-plate in well under a minute. If that proves slow, replace the incremental
-disc update with a per-layer rebuild via van Herk/Gil-Werman running maxima.
-
-Within one object nothing above the nozzle exists, so the check short-circuits
-whenever `dilated[part][cell] <= z + part.z_lo`, which is the common case.
-
-**4. Object attribution.** When the walker is inside a labelled object, the
-painted cells carry that id, and a hit reports both the object being printed
-and the object hit. Without labels, the report still gives coordinates and
-the line number.
-
-**5. Special moves.** Homing (`G28`) is modelled as a move of the head to the
-profile's home position at the current Z (MK4 homes XY before Z). `M600`
-and pauses are modelled as the park move from the profile; the first
-measurement task is to confirm on the MK4 whether M600 lifts Z (user reports
-suggest it does not, which makes a park move over a finished neighbour a real
-collision risk and exactly what phase 2 must plan around).
+The parser inside `main()` of `gcode-sheet.mjs` (streaming line visitor,
+fast float parsing, G0–G3 with arc interpolation, coordinate and extrusion
+modes, `.bgcode` decoding) becomes a module both tools consume, emitting
+moves with layer, object and feature attribution from PrusaSlicer's
+`;LAYER_CHANGE`, `; printing object` and `;TYPE:` markers, plus homing,
+pause and filament-change events. This is a refactor-only change whose
+acceptance test is that `gcode-sheet` renders stay pixel-identical, which
+`nix flake check` already verifies.
 
 ### Library interface (what phase 2 consumes)
 
@@ -201,36 +174,18 @@ store.paint(path.movesOf(objectA));                    // deposit A
 const hits  = checkMoves(profile, store, path.movesOf(objectB)); // print B after A?
 ```
 
-`checkMoves` is pure with respect to the store (it only reads), so phase 2 can
-paint a set of chunks once and test many candidates against it.
-
-### Validation
-
-- **Synthetic fixtures** generated with PrusaSlicer CLI (`bench/mk4.ini`
-  already drives it): two 60 mm-tall cubes (a) side by side in X with
-  `complete_objects = 1` → expect gantry collision; (b) front and back,
-  separated by more than the gantry reach → expect none; (c) front and back,
-  separated by less than the gantry reach → expect collision in exactly one of
-  the two orders; (d) two 10 mm cubes side by side → expect none (below the
-  20 mm clearance); (e) a normal interleaved multi-object print → none.
-  Cases (a)–(d) are also what PrusaSlicer's own sequential-print validation
-  accepts or rejects, so the slicer's verdict is a cross-check (PrusaSlicer is
-  more conservative: it allows only the last object to exceed the clearance
-  height, with no gantry Y model).
-- **Parser parity:** `gcode-sheet` renders stay pixel-identical after the
-  extraction (the existing `nix flake check` already compares PNGs).
-- **Real prints:** the Prusa MMU and large fixtures used by the benchmarks
-  must report no collision.
+`checkMoves` only reads the store, so phase 2 can paint a set of chunks
+once and test many candidates against it.
 
 ### Milestones
 
-1. Extract `lib/toolpath.mjs` from `gcode-sheet.mjs`; tests unchanged.
+1. Extract the shared toolpath reader; `gcode-sheet` tests unchanged.
 2. Printer profile schema + MK4 profile with PrusaSlicer-derived defaults.
-3. Deposit store + per-part dilated maps + `checkMoves`.
-4. CLI, JSON report, event collapsing, exit codes.
-5. Synthetic fixtures (a)–(e) as `node --test` cases; add to `nix flake check`.
-6. PNG overlay of collisions via the existing renderer.
-7. Measure the gantry extents on a real MK4 and set `measured: true`.
+3. Reference checker and the fixture set with expected verdicts, in CI.
+4. Fast checker, accepted against the reference and the property tests.
+5. CLI, JSON report, event collapsing, exit codes, PNG overlay.
+6. Measure the gantry on a real MK4, print the boundary plate, set
+   `measured: true`.
 
 ## Phase 2: `gcode-sequence`
 
@@ -304,9 +259,9 @@ development, so they are left to it.
 - **Label objects** must be on in PrusaSlicer for phase 2 and for per-object
   attribution in phase 1; the tools say so loudly when the markers are
   absent.
-- **Solid-column assumption** in the deposit store over-reports for bridges
-  and overhangs printed over empty space; acceptable for a safety tool, and
-  the Z-slab occupancy maps are the escape hatch.
+- **Over-reporting** on bridges and overhangs is accepted for a safety tool;
+  how far to refine the deposited-material model is decided by the
+  fixtures, not in advance.
 - **Thermal effects** of printing a tall part next to a long-cooled one
   (adhesion, re-warming) are not modelled; the tool orders for collisions and
   time only.
