@@ -138,9 +138,8 @@ disagreements appear, and a small number of physical confirmations:
    disagreement is explained in the test.
 3. **Property tests** that hold whatever the implementation: a single-object
    print never collides; adding deposited material never removes a
-   collision; raising the head never adds one; a finer grid or smaller
-   margin never adds one; collapsed events cover exactly the lines the
-   reference flags.
+   collision; a finer grid or smaller margin never adds one; collapsed
+   events cover exactly the lines the reference flags.
 4. **Physical confirmation.** The two-cube front/back plate printed on the
    MK4 at the predicted boundary distance, which is also how the gantry
    measurements get confirmed, and a deliberately colliding plate stopped
@@ -223,8 +222,10 @@ it rather than specified ahead of it:
    the output's total extrusion and per-object move counts equal the input;
    every object renders identically in `gcode-sheet`'s top view; the walker
    parses the output to the same absolute positions it would have reached
-   in the input, regardless of the input's E and coordinate modes; and the
-   checker's verdict on the output matches the sequencer's prediction. Any
+   in the input, regardless of the input's E and coordinate modes; every
+   move executes under the same printer state (fan, temperatures,
+   acceleration, flow) as it did in the input; and the checker's verdict
+   on the output matches the sequencer's prediction. Any
    mismatch is a bug in the prediction, and the property test pins it.
 4. **Iterate on the search only as the tests demand.** Start with the
    simplest thing (colour groups, tall chunks last, verify), and add
