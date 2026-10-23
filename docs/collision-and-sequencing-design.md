@@ -237,150 +237,60 @@ paint a set of chunks once and test many candidates against it.
 ### Problem
 
 Input: one sliced file with *Label objects* enabled and interleaved layers
-(the normal, non-sequential slice), plus a colour assignment per object
-(`--colours "Benchy id:1=red,Stand id:2=blue"` or a sidecar file; objects
-sliced with a per-object filament colour can be read from the file's
-`; filament_colour` and `T` state when present). Output: an order of print
-**chunks**, the number of filament changes, the estimated time, and a
-rewritten G-code file.
+(the normal, non-sequential slice), plus a colour per object. Output: an
+order of print chunks, the number of filament changes, the estimated time,
+and a rewritten G-code file that phase 1 reports as collision-free.
 
-The **scheduling unit is a chunk** = (object, Z band). The simplest run uses
-one chunk per object (print each object completely, as `complete_objects`
-would). Allowing an object to be split at the clearance height (everything up
-to 20 mm, then the rest) is a cheap and valuable generalisation: all objects'
-bottoms can be printed interleaved in any colour grouping with no collision at
-all, and only the tall tops need sequencing. The chunk boundaries are a
-parameter (`--split-at 20` or a list of heights); the search handles any set.
+A **chunk** is an object, or an object's Z band when a tall object is split
+at the clearance height so that all the short bottoms can be printed in any
+colour grouping and only the tall tops need sequencing. Print time of a chunk
+does not depend on order, so the order only changes the number of filament
+changes (dominant) and the travel between chunks (tie-breaker).
 
-### Feasibility from phase 1
+### Approach
 
-Chunk j may be printed when chunk i has already been printed iff
-`checkMoves(profile, store(i), moves(j))` reports nothing. Because the head
-collides with a union of deposited chunks iff it collides with at least one
-of them, the pairwise matrix `ok[i][j]` ("j after i") decides feasibility of
-any order: an order is feasible iff every earlier/later pair is `ok`. That is
-n² phase-1 checks, each sub-second, and chunks of the same object are forced
-into Z order.
+The phase 1 checker is the oracle, and the sequencer is developed against
+it rather than specified ahead of it:
 
-The moves tested for chunk j are not only its extrusion moves but the **glue
-moves** the re-sequencer will add. For the pairwise matrix to be exact, every
-glue move must depend only on the chunk it belongs to, never on which chunk
-came before. The glue is therefore designed around a **safe plane**:
+1. **Build the test set first.** Slice the phase 1 fixtures (side-by-side
+   and front/back cubes, short and tall, two and three colours) plus a few
+   real plates with PrusaSlicer's CLI, and record for each the orders a human
+   expects to be feasible or infeasible and the minimum number of colour
+   changes. These are the acceptance tests; new ones are added whenever the
+   checker finds something the sequencer did not predict.
+2. **Generate candidate orders, verify every one with the checker.** The
+   sequencer never trusts its own feasibility reasoning. Whatever shortcut it
+   uses to prune the search (a pairwise compatibility matrix, colour
+   grouping, a DP over subsets) is a heuristic; the emitted G-code is run
+   through `gcode-collide` and only a clean result is accepted. A rejected
+   candidate is a test case, not a surprise.
+3. **Property tests on the emitter.** For random chunk orders of a fixture:
+   the output's total extrusion and per-object move counts equal the input;
+   every object renders identically in `gcode-sheet`'s top view; the walker
+   parses the output to the same absolute positions it would have reached
+   in the input, regardless of the input's E and coordinate modes; and the
+   checker's verdict on the output matches the sequencer's prediction. Any
+   mismatch is a bug in the prediction, and the property test pins it.
+4. **Iterate on the search only as the tests demand.** Start with the
+   simplest thing (colour groups, tall chunks last, verify), and add
+   machinery (splitting, exact search, smarter glue moves) when a fixture
+   shows a feasible, cheaper order the current version misses.
 
-- *Safe height* `H(S)` for a deposited set S is `min(z_max, max top of S +
-  margin)`. It is monotone in S. Raising the nozzle only moves every part's
-  band upward, away from material, so a vertical lift from any
-  collision-free position is collision-free, and a horizontal move at `H`
-  clears every part whose band starts at or above the tip. The cap at
-  `z_max` means a plate whose tallest finished chunk reaches the Z limit
-  gets a travel that grazes it; such transitions are not assumed safe but
-  checked like any other move, and rejected if they hit.
-- *Chunk j's moves* are: a vertical **descent** from `H` at j's first point,
-  j's extrusion moves verbatim, and a vertical **lift** back to `H` at j's
-  last point. The horizontal travel between chunk i's lift and chunk j's
-  descent happens at `H` and belongs to neither chunk; it is safe by the
-  argument above and is verified again in the final pass.
-- *Colour changes* are issued at `H` over the plate's free corner (profile
-  `park`): travel at `H` to the park XY, `M600`, return at `H`. The
-  firmware's own park and unload motion is modelled as a move set from the
-  profile and checked once per deposited set rather than per transition; if
-  the firmware does not lift and parks across the bed at the current Z, this
-  is the move that fails next to a tall finished part, and the report says
-  so.
-
-With that structure, `ok[i][j]` evaluates `moves(j)` (descent, extrusion,
-lift) against `store(i)` with `H = H({i, j})`. In a real order the descent
-starts from the larger `H(S)`, but the extra segment is above every deposited
-top and adds no risk, so the pairwise check is exact for the solid-column
-model. The descent is the dangerous move: with a tall neighbour in the
-gantry's Y band, dropping the nozzle back to a low layer of a short object
-collides even though the travel did not.
-
-Diagnostics when no order exists: report the pair(s) with `ok[i][j]` and
-`ok[j][i]` both false and the part/height involved, so the user can move the
-object on the plate or lower the split height.
-
-### Objective
-
-Print time of a chunk is order-independent (its moves are copied verbatim),
-so the order only changes:
-
-- **Filament changes:** count of colour transitions × `change_cost` (default
-  120 s, profile-settable; also reported as a plain count since it is the
-  number of times a human must attend the printer);
-- **Glue travel:** lift/travel/descend per chunk transition, estimated from
-  distance and the file's travel feedrate (seconds each, usually negligible
-  but it is what breaks ties);
-- **Reheat/cool-down:** ignored in the first version.
-
-So the cost of an order is `Σ transition_cost(prev, next)`, a TSP-with-
-precedence over at most a few dozen chunks.
-
-### Solver
-
-- n ≤ ~20 chunks: exact Held–Karp DP over subsets, `O(2ⁿ · n²)`, with the
-  precedence matrix pruning states (a state `S` with last chunk `l` is valid
-  only if `ok[i][l]` for all `i ∈ S` and the same-object Z-order holds).
-  Twenty chunks is a million states times twenty, well within a second in JS.
-- Larger n: greedy by colour groups (print every chunk of one colour, then the
-  next, choosing the group order that keeps tall chunks last) followed by
-  2-opt / or-opt local search under the same feasibility check. Since colour
-  changes dominate, the greedy solution is usually optimal already; the exact
-  solver is there to prove it on small plates and to catch the asymmetric
-  front/back cases where the cheaper colour grouping is only reachable in one
-  direction.
-
-### Re-sequencer (G-code output)
-
-Emit the original header and start G-code, then for each chunk in order:
-
-1. If the colour differs from the previous chunk: at safe height, travel to
-   the park XY, emit `M600` (or the profile's change macro), return.
-2. Travel at safe height to the chunk's first point, descend, restore
-   `;Z:`/`;LAYER_CHANGE` markers so the printer's progress display and
-   `gcode-sheet` still work.
-3. Emit the chunk's moves **from the walker's normalised state, not by
-   copying text**: absolute XYZ (`G90`) and relative E (`M83`), with the
-   original feedrates, comments and markers carried through. Files sliced
-   with absolute E (`M82`) or relative XYZ (`G91`) blocks are only correct in
-   their original order, so the emitter rebases them: E becomes relative, and
-   any `G91` segment is re-expressed as absolute targets. Retraction state is
-   carried across cut points because they fall on `; printing object`
-   boundaries, where PrusaSlicer has already retracted; the emitter asserts
-   this and refuses a file where a boundary lands mid-extrusion.
-4. Lift to safe height at the chunk's last point.
-5. Skirt/brim, purge line and wipe tower blocks (which belong to no object)
-   are printed first at their original heights, since they are all first-layer
-   or below the clearance; a wipe tower taller than the clearance makes the
-   file unsuitable and is reported.
-
-Finally **run phase 1 on the output file**. The re-sequenced file must come
-back collision-free; this closes the loop and catches any glue move the
-matrix did not model. The design keeps the matrix and the emitter using the
-same glue-move generator so the two cannot drift.
-
-### Validation
-
-- The synthetic fixtures from phase 1, assigned colours, with expected
-  orders: side-by-side tall parts in two colours → infeasible as whole
-  objects, feasible with `--split-at 20` and exactly one colour change in the
-  bottom band plus one per tall top; front/back parts → the order the
-  asymmetric gantry permits.
-- Re-sequenced output: phase 1 reports no collision; total extrusion length
-  and per-object move counts equal the input (nothing lost or duplicated);
-  `gcode-sheet` renders the before and after plates identically in the top
-  view.
-- A real MK4 test print of the two-cube front/back case, which is also how
-  the gantry measurements get confirmed.
+The details that would otherwise be argued in prose (how glue moves are
+chosen, how coordinates are rebased, where the safe travel height sits
+relative to the Z limit, whether pairwise checks suffice) are exactly the
+things the checker and the property tests can prove or refute during
+development, so they are left to it.
 
 ### Milestones
 
-1. Chunk extraction from labelled files (object × Z band) + glue-move
-   generator.
-2. Pairwise matrix via the phase-1 library; infeasibility diagnostics.
-3. Exact DP solver + greedy/local-search fallback; cost model and report.
-4. G-code emitter + phase-1 verification pass on the output.
-5. Fixtures and tests; `nix flake check` integration; README.
+1. Fixture plates with expected verdicts and change counts; CI runs them.
+2. Chunk extraction from labelled files and a G-code emitter under the
+   property tests above.
+3. First sequencer (colour grouping + verify) passing the fixtures.
+4. Splitting at the clearance height and an exact search where the
+   fixtures show the simple version is not optimal.
+5. A real MK4 test print of the two-cube front/back plate.
 
 ## Risks and open questions
 
