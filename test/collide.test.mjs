@@ -18,6 +18,10 @@ import {
   collapseEvents,
 } from '../lib/collide.mjs';
 
+// The original three-part MK4 geometry (nozzle r4 to 12 mm, extruder and gantry from 20 mm),
+// frozen for the tests that assert exact verdicts per part.
+const LEGACY = fileURLToPath(new URL('./profiles/mk4-legacy-20mm.json', import.meta.url));
+
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcode-collide-test-'));
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 let serial = 0;
@@ -200,25 +204,78 @@ test('Phase 1 fixtures: short cubes (<=20mm) side by side, extruder cylinder vs 
     { name: 'Back30', x0: 70, y0: 92, x1: 80, y1: 102, height: 30 },
   ], { sequential: true });
 
-  assert.equal(checkToolpath(farShort, 'mk4').collides, false);
-  assert.equal(checkToolpathReference(farShort, 'mk4').collides, false);
-  assert.equal(checkPrusaSlicerSequential(farShort, 'mk4').collides, false);
+  assert.equal(checkToolpath(farShort, LEGACY).collides, false);
+  assert.equal(checkToolpathReference(farShort, LEGACY).collides, false);
+  assert.equal(checkPrusaSlicerSequential(farShort, LEGACY).collides, false);
 
-  assert.equal(checkToolpath(midShort, 'mk4').collides, false);
-  assert.equal(checkToolpathReference(midShort, 'mk4').collides, false);
-  assert.equal(checkPrusaSlicerSequential(midShort, 'mk4').collides, true);
+  assert.equal(checkToolpath(midShort, LEGACY).collides, false);
+  assert.equal(checkToolpathReference(midShort, LEGACY).collides, false);
+  assert.equal(checkPrusaSlicerSequential(midShort, LEGACY).collides, true);
 
-  const fastTouch = checkToolpath(touchingShort, 'mk4');
-  const refTouch = checkToolpathReference(touchingShort, 'mk4');
+  const fastTouch = checkToolpath(touchingShort, LEGACY);
+  const refTouch = checkToolpathReference(touchingShort, LEGACY);
   assert.equal(fastTouch.collides, true);
   assert.equal(refTouch.collides, true);
   assert.ok(fastTouch.summary.parts_hit.includes('nozzle'));
 
-  const fastExt = checkToolpath(extruderOnlyHit, 'mk4');
-  const refExt = checkToolpathReference(extruderOnlyHit, 'mk4');
+  const fastExt = checkToolpath(extruderOnlyHit, LEGACY);
+  const refExt = checkToolpathReference(extruderOnlyHit, LEGACY);
   assert.equal(fastExt.collides, true);
   assert.equal(refExt.collides, true);
   assert.deepEqual(fastExt.summary.parts_hit, ['extruder']);
+});
+
+test('MK4 profile: overlapping head parts in nozzle-tip coordinates, notes kept, clearance from the extruder body', () => {
+  const profile = loadProfile('mk4');
+  assert.deepEqual(profile.parts.map(p => [p.id, p.shape, p.z, p.measured]), [
+    ['nozzle_cone', 'cylinder', [0, 2.5], true],
+    ['nozzle_hex', 'cylinder', [2.5, 5], true],
+    ['heater_block', 'box', [5, 13], false],
+    ['fan_shroud', 'box', [4, 13], false],
+    ['extruder', 'cylinder', [13, 200], false],
+    ['gantry', 'box', [20, 400], false],
+  ]);
+  assert.ok(profile.parts.every(p => typeof p.note === 'string' && p.note.length > 0));
+  // PrusaSlicer's *commonMK4* extruder_clearance_height / _radius.
+  assert.equal(profile.clearance_height, 13);
+  assert.equal(profile.clearance_radius, 45);
+  assert.deepEqual(profile.clearance_levels, [4, 5, 13, 20]);
+  assert.deepEqual(profile.unmeasuredParts, ['heater_block', 'fan_shroud', 'extruder', 'gantry']);
+  // The frozen legacy geometry keeps its single 20 mm level.
+  const legacy = loadProfile(LEGACY);
+  assert.equal(legacy.clearance_height, 20);
+  assert.deepEqual(legacy.clearance_levels, [20]);
+
+  const gcode = buildBoxPlateGcode([
+    { name: 'ShortA', x0: 50, y0: 95, x1: 60, y1: 105, height: 12 },
+    { name: 'ShortB', x0: 120, y0: 95, x1: 130, y1: 105, height: 12 },
+  ], { sequential: true });
+  const res = checkToolpath(gcode, 'mk4', { isText: true });
+  assert.ok(res.warnings.some(w => /unmeasured parts \(heater_block, fan_shroud, extruder, gantry\).*Measuring your printer/.test(w)), res.warnings.join('\n'));
+});
+
+test('MK4 profile verdicts: PrusaSlicer 13 mm clearance, the fan shroud reaches left, the extruder body from 13 mm', () => {
+  const box = (name, x0, y0, height) => ({ name, x0, y0, x1: x0 + 10, y1: y0 + 10, height });
+  // 60 mm apart, 16 mm tall: the 3D head clears it; PrusaSlicer's 2D rule (only the last
+  // object may exceed extruder_clearance_height = 13 mm) rejects it.
+  const far16 = buildBoxPlateGcode([box('ShortA', 50, 95, 16), box('ShortB', 120, 95, 16)], { sequential: true });
+  assert.equal(checkToolpath(far16, 'mk4').collides, false);
+  assert.equal(checkToolpathReference(far16, 'mk4').collides, false);
+  assert.equal(checkPrusaSlicerSequential(far16, 'mk4').collides, true);
+  // 12 mm tall: under 13 mm, PrusaSlicer accepts too.
+  const far12 = buildBoxPlateGcode([box('ShortA', 50, 95, 12), box('ShortB', 120, 95, 12)], { sequential: true });
+  assert.equal(checkPrusaSlicerSequential(far12, 'mk4').collides, false);
+  // 20 mm gap, 12 mm tall: the (placeholder) fan shroud, 30 mm to the left of the nozzle from
+  // 4 mm up, sweeps over the finished cube while B's lower layers print.
+  const mid12 = buildBoxPlateGcode([box('ShortA', 50, 95, 12), box('ShortB', 80, 95, 12)], { sequential: true });
+  const fastMid = checkToolpath(mid12, 'mk4');
+  assert.equal(fastMid.collides, true);
+  assert.equal(checkToolpathReference(mid12, 'mk4').collides, true);
+  assert.deepEqual(fastMid.summary.parts_hit, ['fan_shroud']);
+  // 30 mm tall cubes, 32 mm apart in Y and 33.5 mm radially: only the extruder body (r 45).
+  const ext = buildBoxPlateGcode([box('Front30', 50, 50, 30), box('Back30', 70, 92, 30)], { sequential: true });
+  assert.deepEqual(checkToolpath(ext, 'mk4').summary.parts_hit, ['extruder']);
+  assert.equal(checkToolpathReference(ext, 'mk4').collides, true);
 });
 
 test('Phase 1 fixtures: normal interleaved multi-object slice and real caliper.bgcode never collide', () => {
@@ -463,8 +520,8 @@ test('Phase 1 Property 4: Collapsed events cover the exact lines the reference c
     { name: 'TallB', x0: 85, y0: 95, x1: 95, y1: 105, height: 50 },
   ], { sequential: true });
 
-  const fast = checkToolpath(gcode, 'mk4', { isText: true });
-  const ref = checkToolpathReference(gcode, 'mk4', { isText: true });
+  const fast = checkToolpath(gcode, LEGACY, { isText: true });
+  const ref = checkToolpathReference(gcode, LEGACY, { isText: true });
 
   // Both extruder and gantry hit across dozens of moves, but collapseEvents merges each part into 1 incident (2 total)
   assert.equal(fast.events.length, 2);

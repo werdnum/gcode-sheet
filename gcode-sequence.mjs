@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { loadProfile } from './lib/profiles.mjs';
+import { loadProfile, wideClearanceHeights } from './lib/profiles.mjs';
 import { InputError } from './lib/sequence.mjs';
 import { sequenceToolpath, DEFAULT_MAX_CANDIDATES, DEFAULT_MAX_STATES, DEFAULT_BEAM } from './lib/plan.mjs';
 
@@ -38,7 +38,7 @@ function parseSplitHeightsArg(raw, profile) {
     const trimmed = token.trim();
     if (!trimmed) continue;
     if (trimmed === 'clearance' || trimmed === 'auto') {
-      heights.push(profile?.clearance_height ?? 20);
+      heights.push(...wideClearanceHeights(profile));
     } else {
       const val = Number(trimmed);
       if (!Number.isFinite(val) || val <= 0) {
@@ -89,11 +89,16 @@ function textReport(input, report) {
   }
   if (report.pass_through) {
     out.push(`No improvement: keeping the file's own order (${report.filament_changes} filament change(s), est. ${fmtTime(report.estimated_time_s)}); ${report.planner.reason}.`);
+    out.push(`Colour change cost: ${report.change_cost.change_cost_s} s (${report.change_cost.source})`);
+    for (const c of report.planner.considered?.clusters || []) {
+      out.push(`Considered plan printed layer by layer (too close to print apart): ${c.objects.join(' + ')}`);
+    }
     out.push(`Verified collision-free: ${report.verified ? 'yes' : 'NO'}`);
     if (report.output) out.push(`Output: ${report.output} (a copy of the input)`);
     return out.join('\n');
   }
   out.push(`Plan: ${report.steps.length} step(s), ${report.filament_changes} filament change(s), est. ${fmtTime(report.estimated_time_s)}${plannerLine(report.planner)}`);
+  out.push(`Colour change cost: ${report.change_cost.change_cost_s} s (${report.change_cost.source})`);
   const nameW = Math.max(6, ...report.steps.map(s => s.object.length));
   out.push(`   #  ${'object'.padEnd(nameW)}  ${'Z from'.padStart(7)}  ${'Z to'.padStart(7)}  colour`);
   let prev = null;
@@ -205,8 +210,8 @@ for (const w of result.warnings || []) {
 }
 
 if (result.feasible && output) {
-  // A pass-through of a .bgcode input has no text: copy the input file as is.
-  if (result.gcode === null && result.pass_through) fs.copyFileSync(input, output);
+  // A pass-through is a byte copy of the input file, never re-encoded.
+  if (result.pass_through) fs.copyFileSync(input, output);
   else fs.writeFileSync(output, result.gcode);
 }
 
@@ -220,6 +225,7 @@ const report = result.feasible
       filament_changes: result.filament_changes,
       travel_distance_mm: result.travel_distance_mm,
       estimated_time_s: result.estimated_time_s,
+      change_cost: result.change_cost,
       pass_through: result.pass_through || false,
       steps: result.steps,
       clusters: result.clusters,

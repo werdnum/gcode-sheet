@@ -73,6 +73,23 @@ gantry's Y extent is deliberately asymmetric because the Nextruder hangs
 forward of the beam; the asymmetry is what makes "front then back" sometimes
 feasible in only one order, which phase 2 exploits.
 
+**Correction (profile as shipped).** The example above is the original
+three-part sketch. PrusaSlicer's own MK4 family profiles
+(`[printer:*commonMK4*]` in `PrusaResearch.ini`) set
+`extruder_clearance_height = 13`, not 20, so an extruder cylinder starting at
+20 mm was unsafe by 7 mm. The shipped `profiles/mk4.json` models the head as
+overlapping parts: nozzle cone (r 2.5, z 0–2.5) and hex (r 4.5, z 2.5–5) from
+E3D's Prusa Nextruder nozzle drawing (measured), and placeholders for the
+heater block + sock (z 5–13), the MK4 print-fan duct left/front of the nozzle
+(x −30…12, y −22…12, z 4–13, deliberately generous), the extruder body
+(r 45 from 13 mm, PrusaSlicer) and the gantry (from 20 mm, after forum
+reports of "a bit over 20 mm" from tip to X rods). Parts carry a `note` with
+their source. The planner's candidate heights now use every part's starting
+height (4, 5, 13, 20 mm) rather than one clearance value. Tests that assert
+exact plans run on a frozen copy of the original geometry
+(`test/profiles/mk4-legacy-20mm.json`); the property tests run on the real
+profile. README "Measuring your printer" lists what to measure.
+
 Because the bed moves, all geometry is expressed in **bed coordinates** (the
 coordinates G-code uses). In that frame the head at nozzle position (x, y, z)
 occupies, for the gantry part, all of X, the Y band `[y - 30, y + 45]`, and

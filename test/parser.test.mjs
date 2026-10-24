@@ -269,3 +269,16 @@ test('M486 firmware object labels give the same objects and attribution as comme
       ref.commands.filter(c => c.kind === 'object_start' || c.kind === 'object_stop').map(c => [c.kind, c.object]));
   }
 });
+
+test('M486: an unnamed object gets a generated name; the first name seen for an id is kept', async () => {
+  const { loadToolpath } = await import('../lib/toolpath.mjs');
+  const layer = (start) => [';LAYER_CHANGE', ';Z:0.2', start, 'G1 X10 Y10 Z0.2', 'G1 X20 Y10 E1 F1800', 'M486 S-1'];
+  const unnamed = loadToolpath(['G90', 'M83', ...layer('M486 S0')].join('\n'), { isText: true });
+  assert.equal(unnamed.hasObjectLabels, true);
+  assert.deepEqual(unnamed.objects.map(o => [o.name, o.moveCount]), [['object 0', 1]]);
+
+  const info = `; objects_info = ${JSON.stringify({ objects: [{ name: 'Cube', polygon: [] }] })}`;
+  const conflicting = loadToolpath([info, 'G90', 'M83', 'M486 S0', 'M486 AOther', 'M486 S-1', ...layer('M486 S0')].join('\n'), { isText: true });
+  assert.deepEqual(conflicting.objects.filter(o => o.moveCount > 0).map(o => o.name), ['Cube']);
+  assert.ok(!conflicting.objects.some(o => o.name === 'Other'));
+});
