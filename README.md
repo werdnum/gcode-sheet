@@ -201,7 +201,7 @@ nix run .#collide -- plate.bgcode --png collision.png
 | `--grid MM` | `1.0` | Deposited-material height-map grid resolution in mm |
 | `--margin MM` | `0.5` | Horizontal safety margin added to deposited widths in mm |
 | `--json PATH` | *(stdout)* | Also write the JSON collision report to `PATH` |
-| `--png PATH` | *(none)* | Render the deposited geometry up to the first collision with the offending head parts overlaid |
+| `--png PATH` | *(none)* | Render the deposited geometry up to the first collision with the offending head parts overlaid (a render failure is added to `warnings` and does not change the exit status) |
 
 Exit status: `0` = no collision, `1` = collision detected, `2` = error.
 

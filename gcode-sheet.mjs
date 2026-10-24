@@ -665,7 +665,7 @@ async function main() {
         if (dx < tr.minX) { tr.minX = dx; p[0] = X; p[1] = Y; p[2] = Z; }
         if (dx > tr.maxX) { tr.maxX = dx; p[3] = X; p[4] = Y; p[5] = Z; }
         if (dy < tr.minY) { tr.minY = dy; p[6] = X; p[7] = Y; p[8] = Z; }
-        if (dy > tr.maxY) { tr.minY = tr.minY; tr.maxY = dy; p[9] = X; p[10] = Y; p[11] = Z; }
+        if (dy > tr.maxY) { tr.maxY = dy; p[9] = X; p[10] = Y; p[11] = Z; }
       }
     };
 
@@ -737,6 +737,8 @@ async function main() {
         endLineLimit,
       }, {
         onLayerChange(_lineNo, _rawLine, st) {
+          // st.layerZs is only pushed to on a layer change, so binding it here (rather than on
+          // every move) is enough for recordFitPoint's first-layer Z lookup.
           layerZs = st.layerZs;
           finishExtrusionPath();
           inWipeTower = false;
@@ -752,7 +754,6 @@ async function main() {
           finishExtrusionPath();
         },
         onLinearMove(_lineNo, _cmdNum, sx, sy, sz, nx, ny, nz, _dE, isExt, _entry, _layerZ, _raw, st) {
-          layerZs = st.layerZs;
           if (isExt && !inInterior) {
             ensureExtrusionPath(st, sx, sy, sz);
             pushPathPoint(nx, ny, nz);
@@ -761,7 +762,6 @@ async function main() {
           }
         },
         onArcMove(_lineNo, cmdNum, sx, sy, sz, nx, ny, nz, iScaled, jScaled, rScaled, _dE, isExt, _entry, _layerZ, _raw, st) {
-          layerZs = st.layerZs;
           if (isExt && !inInterior) {
             ensureExtrusionPath(st, sx, sy, sz);
             tessellateArcPoints(cmdNum === 2, sx, sy, sz, nx, ny, nz, iScaled, jScaled, rScaled, arcTol, pushPathPoint);
@@ -775,6 +775,7 @@ async function main() {
       });
       layerZs = walked.layerZs;
     } finally {
+      // Remove the decoded .bgcode temp file as soon as parsing is done.
       cleanupBgcode();
     }
 
@@ -956,7 +957,6 @@ async function main() {
       },
     }));
   } finally {
-    cleanupBgcode();
     try {
       for (const m of meshes) m.geometry.dispose();
       for (const mat of materials) if (mat) mat.dispose();

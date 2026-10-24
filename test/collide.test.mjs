@@ -591,3 +591,106 @@ test('PrusaSlicer-sliced fixtures (bench/mk4.ini + --wipe): sequential side-by-s
   assert.equal(resInter.collides, false);
 });
 
+
+test('movesOf resolves exact name, exact base name or index only; no substring matches; ambiguity throws', () => {
+  const gcode = buildBoxPlateGcode([
+    { name: 'BigCube id:1 copy:0', x0: 50, y0: 95, x1: 60, y1: 105, height: 4 },
+    { name: 'Cube id:2 copy:0', x0: 150, y0: 95, x1: 160, y1: 105, height: 4 },
+  ], { sequential: true });
+  const tp = loadToolpath(gcode, { isText: true });
+  const objectsOf = (moves) => [...new Set(moves.map(m => m.object))];
+
+  assert.deepEqual(objectsOf(tp.movesOf('Cube')), ['Cube id:2 copy:0']);
+  assert.deepEqual(objectsOf(tp.movesOf('Cube id:2 copy:0')), ['Cube id:2 copy:0']);
+  assert.deepEqual(objectsOf(tp.movesOf('BigCube')), ['BigCube id:1 copy:0']);
+  const cubeIdx = tp.objects.findIndex(o => o.name === 'Cube id:2 copy:0');
+  assert.deepEqual(objectsOf(tp.movesOf(cubeIdx)), ['Cube id:2 copy:0']);
+  assert.deepEqual(objectsOf(tp.movesOf(String(cubeIdx))), ['Cube id:2 copy:0']);
+  assert.deepEqual(tp.movesOf('ube'), []);
+  assert.deepEqual(tp.movesOf('Big'), []);
+
+  const dup = loadToolpath(buildBoxPlateGcode([
+    { name: 'Cube id:0 copy:0', x0: 50, y0: 95, x1: 60, y1: 105, height: 4 },
+    { name: 'Cube id:0 copy:1', x0: 150, y0: 95, x1: 160, y1: 105, height: 4 },
+  ], { sequential: true }), { isText: true });
+  assert.throws(() => dup.movesOf('Cube'), /Ambiguous object 'Cube'/);
+  assert.deepEqual(objectsOf(dup.movesOf('Cube id:0 copy:1')), ['Cube id:0 copy:1']);
+});
+
+test('collapseEvents: line always names the representative (deepest) hit; first_line/lines keep the range', () => {
+  const mk = (line, pen, extra = {}) => ({
+    line, part: 'gantry', hit_object: 'A', printing_object: 'B', penetration_mm: pen,
+    z: line / 10, layer: line, nozzle: [line, line], hit_cell: [line, 0], deposited_top: line / 5,
+    move: `G1 L${line}`, ...extra,
+  });
+  const [ev] = collapseEvents([mk(10, 0.5), mk(11, 2), mk(11, 2), mk(12, 1)]);
+  assert.equal(ev.line, 11);
+  assert.equal(ev.first_line, 10);
+  assert.equal(ev.last_line, 12);
+  assert.deepEqual(ev.lines, [10, 11, 12]);
+  assert.equal(ev.move, 'G1 L11');
+  assert.equal(ev.z, 1.1);
+
+  // Property: on random streams every collapsed event is internally consistent: its line,
+  // z, layer, move, nozzle, hit_cell and deposited_top all come from the same raw event,
+  // which is the first deepest hit of its group.
+  let seed = 7;
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) >>> 0; return seed % n; };
+  for (let trial = 0; trial < 300; trial++) {
+    const raw = [];
+    let line = 1;
+    const n = 1 + rnd(30);
+    for (let i = 0; i < n; i++) {
+      line += rnd(3);
+      raw.push(mk(line, rnd(50) / 10, {
+        part: ['gantry', 'extruder'][rnd(2)],
+        hit_object: ['A', 'C'][rnd(2)],
+      }));
+    }
+    const events = collapseEvents(raw);
+    for (const e of events) {
+      const src = raw.find(r => r.line === e.line && r.part === e.part && r.penetration_mm === e.penetration_mm);
+      assert.ok(src, 'representative line must be a raw hit of this part with the reported penetration');
+      for (const k of ['z', 'layer', 'move', 'nozzle', 'hit_cell', 'deposited_top', 'hit_object']) {
+        assert.deepEqual(e[k], src[k], k);
+      }
+      assert.ok(e.first_line <= e.line && e.line <= e.last_line);
+      assert.ok(e.lines.includes(e.line));
+      assert.equal(e.first_line, e.lines[0]);
+    }
+    assert.equal(events.reduce((s, e) => s + e.count, 0), raw.length);
+  }
+});
+
+test('gcode-collide CLI: a failed --png render is a warning and keeps the collision exit status', () => {
+  const collideFile = path.join(dir, `collide-${serial++}.gcode`);
+  const cleanFile = path.join(dir, `clean-${serial++}.gcode`);
+  const jsonOut = path.join(dir, `report-${serial++}.json`);
+  const pngOut = path.join(dir, `never-${serial++}.png`);
+  fs.writeFileSync(collideFile, buildBoxPlateGcode([
+    { name: 'TallA', x0: 50, y0: 95, x1: 60, y1: 105, height: 50 },
+    { name: 'TallB', x0: 140, y0: 95, x1: 150, y1: 105, height: 50 },
+  ], { sequential: true }));
+  fs.writeFileSync(cleanFile, buildBoxPlateGcode([
+    { name: 'ShortA', x0: 50, y0: 95, x1: 60, y1: 105, height: 14 },
+  ], { sequential: true }));
+
+  const cli = process.env.GCODE_COLLIDE_BIN;
+  const command = cli || process.execPath;
+  const prefix = cli ? [] : [fileURLToPath(new URL('../gcode-collide.mjs', import.meta.url))];
+  const env = { ...process.env, GCODE_SHEET_BIN: path.join(dir, 'no-such-gcode-sheet') };
+  const run = (args) => spawnSync(command, [...prefix, ...args], { encoding: 'utf8', timeout: 30000, env });
+
+  const res = run([collideFile, '--json', jsonOut, '--png', pngOut]);
+  assert.equal(res.status, 1, res.stderr);
+  const report = JSON.parse(res.stdout);
+  assert.equal(report.collides, true);
+  assert.equal(report.png, undefined);
+  assert.ok(report.warnings.some(w => w.includes('--png render failed')));
+  assert.deepEqual(JSON.parse(fs.readFileSync(jsonOut, 'utf8')), report);
+  assert.ok(!fs.existsSync(pngOut));
+
+  const resClean = run([cleanFile, '--png', pngOut]);
+  assert.equal(resClean.status, 0, resClean.stderr);
+  assert.ok(JSON.parse(resClean.stdout).warnings.some(w => w.includes('--png render failed')));
+});

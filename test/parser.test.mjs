@@ -170,3 +170,73 @@ for (const mode of ['tool', 'feature']) {
     }
   });
 }
+
+// Pre-refactor gcode-sheet predicate, kept verbatim as the reference for lib/toolpath.mjs.
+function referenceIsLayerMarker(str, start, end) {
+  while (start < end && str.charCodeAt(start) <= 32) start++;
+  return (str.startsWith(';LAYER_CHANGE', start) &&
+      str.slice(start + 13, end).trim() === '') ||
+    (str.startsWith(';LAYER:', start) &&
+      /^\d+\s*$/.test(str.slice(start + 7, end)));
+}
+
+test('layer markers: trailing whitespace allowed, only integer Cura layers', async () => {
+  const { isLayerMarker, hasLayerMarkersInText, hasLayerMarkers } = await import('../lib/toolpath.mjs');
+  const cases = [
+    [';LAYER_CHANGE', true],
+    [';LAYER_CHANGE ', true],
+    [';LAYER_CHANGE\t \t', true],
+    ['  ;LAYER_CHANGE', true],
+    [';LAYER_CHANGED', false],
+    [';LAYER_CHANGE x', false],
+    [';LAYER:3', true],
+    [';LAYER:3  ', true],
+    [';LAYER:0', true],
+    [';LAYER:1.5', false],
+    [';LAYER:0 ; note', false],
+    [';LAYER:-1', false],
+    [';LAYER:', false],
+    [';LAYER: 3', false],
+    [';LAYER:1e3', false],
+  ];
+  for (const [line, want] of cases) {
+    assert.equal(isLayerMarker(line, 0, line.length), want, JSON.stringify(line));
+    assert.equal(hasLayerMarkersInText(`G1 X1\n${line}\nG1 X2\n`), want, JSON.stringify(line));
+    const file = path.join(dir, `marker-${serial++}.gcode`);
+    fs.writeFileSync(file, `G1 X1\r\n${line}\r\nG1 X2\r\n`);
+    assert.equal(hasLayerMarkers(file), want, JSON.stringify(line));
+  }
+
+  // Property: identical to the pre-refactor predicate on random marker-like lines.
+  let seed = 12345;
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) >>> 0; return seed % n; };
+  const pieces = [';LAYER_CHANGE', ';LAYER:', ';LAYER', ' ', '\t', ' ', '0', '7', '42', '.', '5', '-', 'e', ';', 'x', ' note'];
+  for (let i = 0; i < 5000; i++) {
+    let line = '';
+    const n = 1 + rnd(5);
+    for (let k = 0; k < n; k++) line += pieces[rnd(pieces.length)];
+    const pad = ' '.repeat(rnd(3));
+    const str = pad + line + pad;
+    const start = pad.length > 0 ? rnd(pad.length + 1) : 0;
+    assert.equal(isLayerMarker(str, start, str.length), referenceIsLayerMarker(str, start, str.length), JSON.stringify(str));
+  }
+});
+
+test('walkGcode skips the layer-marker pre-scan when includeStart is set', async () => {
+  const { walkGcode, loadToolpath } = await import('../lib/toolpath.mjs');
+  const marked = 'G1 X1 Y1 Z0.2 E1\n;LAYER_CHANGE\n;Z:0.2\nG1 X2 E1\n';
+  const markerless = 'G1 X1 Y1 Z0.2 E1\nG1 X2 E1\n';
+
+  assert.equal(walkGcode(marked, { isText: true, includeStart: true }).hasMarkers, null);
+  assert.equal(walkGcode(marked, { isText: true }).hasMarkers, true);
+  assert.equal(walkGcode(markerless, { isText: true }).hasMarkers, false);
+
+  // loadToolpath still reports the flag correctly either way.
+  for (const includeStart of [false, true]) {
+    assert.equal(loadToolpath(marked, { isText: true, includeStart }).hasLayerMarkers, true);
+    assert.equal(loadToolpath(markerless, { isText: true, includeStart }).hasLayerMarkers, false);
+  }
+  // The start block is only skipped when markers exist and includeStart is unset.
+  assert.equal(loadToolpath(marked, { isText: true }).moves[0].inStart, true);
+  assert.equal(loadToolpath(marked, { isText: true, includeStart: true }).moves[0].inStart, false);
+});

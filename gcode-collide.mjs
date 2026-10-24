@@ -94,6 +94,12 @@ async function main() {
       }
       execFileSync(cmd, args, { stdio: ['ignore', 'ignore', 'inherit'] });
       report.png = values.png;
+    } catch (err) {
+      // The render is optional: keep the collision analysis result and exit status.
+      const detail = (err.message || String(err)).split('\n')[0];
+      const msg = `--png render failed; no PNG written (${detail})`;
+      report.warnings = [...report.warnings, msg];
+      console.error(`gcode-collide warning: ${msg}`);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
