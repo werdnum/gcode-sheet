@@ -240,3 +240,32 @@ test('walkGcode skips the layer-marker pre-scan when includeStart is set', async
   assert.equal(loadToolpath(marked, { isText: true }).moves[0].inStart, true);
   assert.equal(loadToolpath(marked, { isText: true, includeStart: true }).moves[0].inStart, false);
 });
+
+test('M486 firmware object labels give the same objects and attribution as comment labels', async () => {
+  const { loadToolpath } = await import('../lib/toolpath.mjs');
+  const body = (start, stop) => [
+    ';LAYER_CHANGE', ';Z:0.2',
+    start(0), 'G1 X10 Y10 Z0.2', 'G1 X20 Y10 E1 F1800', stop(0),
+    start(1), 'G1 X50 Y50 Z0.2', 'G1 X60 Y50 E1 F1800', stop(1),
+    ';LAYER_CHANGE', ';Z:0.4',
+    start(1), 'G1 X50 Y50 Z0.4', 'G1 X60 Y50 E1 F1800', stop(1),
+  ];
+  const names = ['Cube id:0 copy 0', 'Ball id:1 copy 0'];
+  const comments = ['G90', 'M83', ...body(n => `; printing object ${names[n]}`, n => `; stop printing object ${names[n]}`)].join('\n');
+  // Declaration block (S, A, S-1 per object) as PrusaSlicer writes it, names from M486 A.
+  const m486 = ['G90', 'M83', 'M486 S0', `M486 A${names[0]}`, 'M486 S-1', 'M486 S1', `M486 A${names[1]}`, 'M486 S-1',
+    ...body(n => `M486 S${n}`, () => 'M486 S-1')].join('\n');
+  // Names from the objects_info header only.
+  const info = [`; objects_info = ${JSON.stringify({ objects: names.map(name => ({ name, polygon: [] })) })}`,
+    'G90', 'M83', ...body(n => `M486 S${n}`, () => 'M486 S-1')].join('\n');
+
+  const ref = loadToolpath(comments, { isText: true });
+  for (const text of [m486, info]) {
+    const tp = loadToolpath(text, { isText: true });
+    assert.equal(tp.hasObjectLabels, true);
+    assert.deepEqual(tp.objects.map(o => [o.name, o.moveCount]), ref.objects.map(o => [o.name, o.moveCount]));
+    assert.deepEqual(tp.moves.filter(m => m.extruding).map(m => m.object), ref.moves.filter(m => m.extruding).map(m => m.object));
+    assert.deepEqual(tp.commands.filter(c => c.kind === 'object_start' || c.kind === 'object_stop').slice(-6).map(c => [c.kind, c.object]),
+      ref.commands.filter(c => c.kind === 'object_start' || c.kind === 'object_stop').map(c => [c.kind, c.object]));
+  }
+});

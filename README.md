@@ -236,6 +236,10 @@ How it plans:
 - **Clusters:** units with material side by side on the same layers, so close that neither may lead the other by a single layer (the checker decides, typically the nozzle body reaching the neighbour), are planned as one unit printed layer by layer. Vertically stacked regions are ordered by the support dependencies instead. Each layer starts with the colour the previous one ended in, so a two-colour cluster costs one `M600` per layer, issued at the safe plane. The cluster is still banded against the rest of the plate.
 - **Search:** A\* over (per-unit height, loaded colour), with an admissible bound on the remaining colour changes. When the plate exceeds `--max-states`, it switches to a beam search, then to a depth-first search for any feasible plan within its node budget. If the emitted file fails verification, the planner retries with finer candidates, then falls back to the fixed-split solver; the report names the planner that produced the plan.
 
+- **Never worse than the file:** the file's own order is a candidate too. Unless a plan needs fewer filament changes (or the file's own order collides), the result is "no improvement": the input is copied unchanged to the output, the report says why (`planner.name: "file-order"`), and the exit status is 0.
+- **MMU files:** when the file changes colour only with tool changes (`T<n>`, no `M600`), the plan's changes are emitted as `T<n>`. Purging is not regenerated (the wipe tower is dropped), so such an output is for analysis only, and the report warns. A file that passes through keeps its wipe tower.
+- Object labels may be comments (`; printing object`) or firmware labels (`M486 S<n>` / `M486 A<name>`, names also from the `; objects_info` header).
+
 The report (text on stdout, JSON with `--json`) lists the steps and compares the plan's filament changes and estimated time with the file's own order and with printing whole objects one after another. That last baseline is judged by the feasibility tables only and is marked as not verified. Example, two 36 mm cubes side by side (the gantry rules out printing either one whole first):
 
 ```
