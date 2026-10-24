@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { loadProfile } from './lib/profiles.mjs';
-import { sequenceToolpath } from './lib/sequence.mjs';
-import { DEFAULT_MAX_CANDIDATES, DEFAULT_MAX_STATES, DEFAULT_BEAM } from './lib/plan.mjs';
+import { InputError } from './lib/sequence.mjs';
+import { sequenceToolpath, DEFAULT_MAX_CANDIDATES, DEFAULT_MAX_STATES, DEFAULT_BEAM } from './lib/plan.mjs';
 
 const USAGE = `Usage: gcode-sequence INPUT.(gcode|bgcode) [OUTPUT.gcode] [options]
   -o, --output PATH         Write resequenced G-code to PATH
@@ -65,9 +65,21 @@ function fmtTime(s) {
   return h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m ${String(sec).padStart(2, '0')}s`;
 }
 
+function plannerLine(p) {
+  if (!p) return '';
+  if (p.name === 'fixed') {
+    return p.fallback_from ? ' (fixed-split solver; the adaptive planner found no verified plan)' : ' (fixed-split solver)';
+  }
+  if (!p.method) return '';
+  return ` (${p.method === 'astar' ? 'A*' : p.method}${p.changes_optimal ? ', fewest changes over the candidate heights' : ''}, ${p.states_explored} states)`;
+}
+
 function textReport(input, report) {
   const out = [];
   out.push(`gcode-sequence: ${input} (${report.printer})`);
+  for (const c of report.clusters || []) {
+    out.push(`Printed layer by layer (too close to print apart): ${c.objects.join(' + ')}`);
+  }
   if (!report.feasible) {
     out.push(`INFEASIBLE: ${report.reason}`);
     for (const d of report.diagnostics || []) {
@@ -75,29 +87,30 @@ function textReport(input, report) {
     }
     return out.join('\n');
   }
-  const p = report.planner || {};
-  const how = p.method
-    ? ` (${p.method === 'astar' ? 'A*' : p.method}${p.changes_optimal ? ', fewest changes over the candidate heights' : ''}, ${p.states_explored} states)`
-    : '';
-  out.push(`Plan: ${report.steps.length} step(s), ${report.filament_changes} filament change(s), est. ${fmtTime(report.estimated_time_s)}${how}`);
+  out.push(`Plan: ${report.steps.length} step(s), ${report.filament_changes} filament change(s), est. ${fmtTime(report.estimated_time_s)}${plannerLine(report.planner)}`);
   const nameW = Math.max(6, ...report.steps.map(s => s.object.length));
   out.push(`   #  ${'object'.padEnd(nameW)}  ${'Z from'.padStart(7)}  ${'Z to'.padStart(7)}  colour`);
   let prev = null;
   report.steps.forEach((s, i) => {
     if (prev !== null && s.colour !== prev) out.push(`      -- M600: ${prev} -> ${s.colour}`);
-    prev = s.colour;
+    prev = s.end_colour ?? s.colour;
     const zl = Number(s.z_lo).toFixed(2).padStart(7);
     const zh = Number(s.z_hi).toFixed(2).padStart(7);
-    out.push(`  ${String(i + 1).padStart(2)}  ${s.object.padEnd(nameW)}  ${zl}  ${zh}  ${s.colour}`);
+    const colour = s.colour_changes_within
+      ? `${s.colour} ... ${s.end_colour} (${s.colour_changes_within} M600 within, per layer)`
+      : s.colour;
+    out.push(`  ${String(i + 1).padStart(2)}  ${s.object.padEnd(nameW)}  ${zl}  ${zh}  ${colour}`);
   });
   const c = report.comparison;
   if (c) {
-    const seq = c.sequential_objects?.feasible
-      ? `${c.sequential_objects.filament_changes} change(s), ${fmtTime(c.sequential_objects.estimated_time_s)}`
-      : 'infeasible';
     out.push('Compared with:');
     out.push(`  file order          ${c.original_file.filament_changes} change(s), ${fmtTime(c.original_file.estimated_time_s)}`);
-    out.push(`  sequential objects  ${seq}`);
+    if (c.sequential_objects) {
+      const seq = c.sequential_objects.feasible
+        ? `${c.sequential_objects.filament_changes} change(s), ${fmtTime(c.sequential_objects.estimated_time_s)} (not verified)`
+        : 'infeasible (not verified)';
+      out.push(`  sequential objects  ${seq}`);
+    }
   }
   out.push(`Verified collision-free: ${report.verified ? 'yes' : 'NO'}`);
   if (report.output) out.push(`Output: ${report.output}`);
@@ -151,6 +164,7 @@ if (values.json && values.json !== '-') {
 
 let profile;
 let options;
+// Everything in this block validates user input, so a one-line message is enough.
 try {
   if (!fs.existsSync(input)) throw new Error(`Input file not found: ${input}`);
   if (!['adaptive', 'fixed'].includes(values.planner)) throw new Error(`Invalid --planner value: ${values.planner}`);
@@ -174,7 +188,10 @@ let result;
 try {
   result = sequenceToolpath(input, options);
 } catch (err) {
-  fail(err.message);
+  // Problems with the input file get a one-line message; anything else is a bug: keep the stack.
+  if (err instanceof InputError) fail(err.message);
+  console.error(`gcode-sequence: ${err.stack || err.message}`);
+  process.exit(2);
 }
 
 for (const w of result.warnings || []) {
@@ -196,7 +213,7 @@ const report = result.feasible
       travel_distance_mm: result.travel_distance_mm,
       estimated_time_s: result.estimated_time_s,
       steps: result.steps,
-      chunks: result.chunks,
+      clusters: result.clusters,
       planner: result.planner,
       comparison: result.comparison,
       output,
@@ -207,9 +224,9 @@ const report = result.feasible
       warnings: result.warnings,
       reason: result.reason,
       diagnostics: result.diagnostics,
+      clusters: result.clusters,
       planner: result.planner,
       comparison: result.comparison,
-      chunks: result.chunks,
     };
 
 const jsonStr = JSON.stringify(report, null, 2);

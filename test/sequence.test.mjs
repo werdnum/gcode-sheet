@@ -15,9 +15,10 @@ import {
   buildPairwiseMatrix,
   emitResequencedGcode,
   isOrderPairwiseFeasible,
-  sequenceToolpath,
+  InputError,
 } from '../lib/sequence.mjs';
 import {
+  sequenceToolpath,
   buildPlanModel,
   isStepFeasible,
   composeStepCheck,
@@ -422,13 +423,13 @@ test('gcode-sequence CLI: exit codes 0, 1, 2, output G-code verification, and --
   assert.equal(parsedOk.verified, true);
   assert.equal(parsedOk.filament_changes, 1);
 
-  // 2 mm apart: the nozzle body (r 4 mm) overlaps the neighbour, so the cubes can only be
-  // printed layer by layer, which no candidate-height plan expresses.
+  // Two 50 mm towers in the gantry's Y band need pauses near 22 and 42 mm; with a single
+  // candidate height (the top) no plan exists, and the fixed solver has no split either.
   fs.writeFileSync(infeasibleIn, buildInterleavedPlate([
     { name: 'Tall1', x0: 50, y0: 95, x1: 60, y1: 105, height: 50 },
-    { name: 'Tall2', x0: 62, y0: 95, x1: 72, y1: 105, height: 50 },
+    { name: 'Tall2', x0: 150, y0: 95, x1: 160, y1: 105, height: 50 },
   ]));
-  const infRes = runSequenceCli([infeasibleIn, '--colours', 'red,blue']);
+  const infRes = runSequenceCli([infeasibleIn, '--colours', 'red,blue', '--max-candidates', '1']);
   assert.equal(infRes.status, 1);
 
   fs.writeFileSync(unlabelledIn, 'G90\nM83\nG1 X10 Y10 Z0.2 E1\n');
@@ -601,30 +602,32 @@ function assertPlanInvariants(input, res, label) {
   assert.equal(res.verified, true, `${label}: not verified`);
   assert.equal(checkToolpath(res.gcode, 'mk4').collides, false, `${label}: emitted file collides`);
 
-  const { extracted } = res;
-  const byObject = new Map();
-  for (const c of res.plan.chunks) {
-    if (!byObject.has(c.object)) byObject.set(c.object, []);
-    byObject.get(c.object).push(c);
+  const { extracted, chunks } = res.internals;
+  // Each planning unit (object or cluster) advances 0 -> top in contiguous steps, and a step
+  // never crosses a change of the unit's per-layer colour pattern.
+  const unitZ = new Map();
+  for (const st of chunks) {
+    const z = unitZ.get(st.object) ?? 0;
+    assert.ok(Math.abs(st.zLo - z) < 1e-6, `${label}: ${st.object} step starts at ${st.zLo}, expected ${z}`);
+    assert.ok(st.zHi > st.zLo, `${label}: ${st.object} step not upward`);
+    unitZ.set(st.object, st.zHi);
+    let changes = 0;
+    for (let i = 1; i < st.slices.length; i++) if (st.slices[i].colour !== st.slices[i - 1].colour) changes++;
+    assert.equal(changes, st.internalChanges, `${label}: internal colour changes`);
+    if (!st.members || st.members.length === 1) assert.equal(changes, 0, `${label}: single-object step crosses a colour boundary`);
   }
+  // Every object's layer slices are emitted exactly once, in Z order.
   for (const [name, slices] of extracted.objectLayerSlices) {
     if (slices.length === 0) continue;
-    const steps = byObject.get(name) || [];
-    assert.ok(steps.length > 0, `${label}: ${name} never printed`);
-    let z = 0;
-    const covered = [];
-    for (const st of steps) {
-      assert.ok(Math.abs(st.zLo - z) < 1e-6, `${label}: ${name} step starts at ${st.zLo}, expected ${z}`);
-      assert.ok(st.zHi > st.zLo, `${label}: ${name} step not upward`);
-      assert.equal(new Set(st.slices.map(sl => sl.colour)).size, 1, `${label}: step crosses a colour boundary`);
-      assert.equal(st.colour, st.slices[0].colour);
-      covered.push(...st.slices);
-      z = st.zHi;
-    }
+    const covered = chunks.flatMap(st => st.slices.filter(sl => sl.object === name));
     const sorted = [...slices].sort((a, b) => a.z - b.z || a.layer - b.layer);
     assert.equal(covered.length, sorted.length, `${label}: ${name} layer count`);
     covered.forEach((sl, i) => assert.equal(sl, sorted[i], `${label}: ${name} slice ${i} out of order or repeated`));
   }
+  const expectedChanges = chunks.reduce((n, st, i) =>
+    n + st.internalChanges + (i > 0 && chunks[i - 1].lastColour !== st.colour ? 1 : 0), 0);
+  assert.equal(res.filament_changes, expectedChanges, `${label}: change count`);
+  assert.equal((res.gcode.match(/^M600$/gm) || []).length, expectedChanges, `${label}: M600 count`);
 
   const inPath = loadToolpath(input);
   const outPath = loadToolpath(res.gcode);
@@ -645,7 +648,7 @@ test('Planner properties over the PrusaSlicer fixtures: verified, Z-ordered exac
     for (const colours of COLOUR_SETS) {
       for (const splitAt of [[], [20]]) {
         const label = `${name} ${colours} split=${splitAt}`;
-        const res = sequenceToolpath(fixture(name), { colours, splitAt });
+        const res = sequenceToolpath(fixture(name), { colours, splitAt, internals: true });
         assertPlanInvariants(fixture(name), res, label);
         const fixed = sequenceToolpath(fixture(name), { colours, splitAt, planner: 'fixed' });
         if (fixed.feasible) {
@@ -667,7 +670,7 @@ test('Planner: tall side-by-side two-colour fixture prints in 3 bands with 2 cha
   // first layer at 0.3 mm (36 > 0.3 + 20), so it is infeasible (the sequential-objects
   // comparison says so too) and 2 is the minimum. The plan: left to 19.8 (<= 0.3 + 20),
   // M600, right 0 -> 36 (left stays within 20 mm of every right layer), M600, left 19.8 -> 36.
-  const res = sequenceToolpath(fixture('interleaved-tall-sbs.gcode'), { colours: 'red,blue' });
+  const res = sequenceToolpath(fixture('interleaved-tall-sbs.gcode'), { colours: 'red,blue', internals: true });
   assertPlanInvariants(fixture('interleaved-tall-sbs.gcode'), res, 'sbs');
   assert.equal(res.filament_changes, 2);
   assert.equal(res.comparison.original_file.filament_changes, 239);
@@ -690,7 +693,7 @@ test('Planner: tall side-by-side two-colour fixture prints in 3 bands with 2 cha
 
 test('Planner: front/back fixtures print sequentially in the order the asymmetric gantry allows', () => {
   for (const colours of ['blue,red', 'red,blue']) {
-    const res = sequenceToolpath(fixture('interleaved-tall-fb-asym.gcode'), { colours });
+    const res = sequenceToolpath(fixture('interleaved-tall-fb-asym.gcode'), { colours, internals: true });
     assertPlanInvariants(fixture('interleaved-tall-fb-asym.gcode'), res, `fb-asym ${colours}`);
     assert.equal(res.filament_changes, 1);
     assert.equal(res.steps.length, 2);
@@ -698,6 +701,7 @@ test('Planner: front/back fixtures print sequentially in the order the asymmetri
     assert.ok(res.steps[1].object.includes('fx_tall_back_asym.stl'));
     assert.equal(res.comparison.sequential_objects.feasible, true);
     assert.equal(res.comparison.sequential_objects.filament_changes, 1);
+    assert.equal(res.comparison.sequential_objects.verified, false);
     assert.equal(res.comparison.original_file.filament_changes, 239);
   }
   const far = sequenceToolpath(fixture('seq-tall-fb-far.gcode'), { colours: 'red,blue' });
@@ -748,24 +752,24 @@ test('Planner: taller and wider plates (2C+ towers, three in a row, beam fallbac
   // printed whole while the X tower stands at some a; Y's first layer forces a <= 2 + 20, and
   // X then resumes at a + 2 <= 24 next to a 50 mm tower (50 > 24 + 20): infeasible.
   const pair = buildInterleavedPlate(row(2, 50, 100));
-  const pairRes = sequenceToolpath(pair, { colours: 'red,blue' });
+  const pairRes = sequenceToolpath(pair, { colours: 'red,blue', internals: true });
   assertPlanInvariants(pair, pairRes, 'pair50');
   assert.equal(pairRes.filament_changes, 3);
   assert.equal(pairRes.comparison.original_file.filament_changes, 49);
 
   // Three in a row, outer two red: red bottoms, blue middle, red tops = 2 changes.
   const three = buildInterleavedPlate(row(3, 36, 60));
-  const threeRes = sequenceToolpath(three, { colours: 'red,blue,red' });
+  const threeRes = sequenceToolpath(three, { colours: 'red,blue,red', internals: true });
   assertPlanInvariants(three, threeRes, 'row3');
   assert.equal(threeRes.filament_changes, 2);
 
   // Forcing the beam search (no A* budget) still yields a verified plan, no better than A*.
-  const beamRes = sequenceToolpath(three, { colours: 'red,blue,red', maxStates: 1 });
+  const beamRes = sequenceToolpath(three, { colours: 'red,blue,red', maxStates: 1, internals: true });
   assertPlanInvariants(three, beamRes, 'row3 beam');
   assert.equal(beamRes.planner.method, 'beam');
   assert.ok(beamRes.filament_changes >= threeRes.filament_changes);
 
-  const tinyBeam = sequenceToolpath(three, { colours: 'red,blue,red', maxStates: 1, beam: 1 });
+  const tinyBeam = sequenceToolpath(three, { colours: 'red,blue,red', maxStates: 1, beam: 1, internals: true });
   assertPlanInvariants(three, tinyBeam, 'row3 beam=1');
 });
 
@@ -776,7 +780,7 @@ test('Planner: in-file M600 colour boundaries are mandatory step boundaries', ()
     { name: 'R', x0: 150, y0: 95, x1: 160, y1: 105, height: 36 },
   ]);
   const gcode = base.replace(';Z:12.000\n', ';Z:12.000\nM600\n');
-  const res = sequenceToolpath(gcode);
+  const res = sequenceToolpath(gcode, { internals: true });
   assertPlanInvariants(gcode, res, 'm600');
   assert.equal(res.comparison.original_file.filament_changes, 1);
   assert.equal(res.filament_changes, 1);
@@ -795,9 +799,9 @@ test('Non-object extrusion above the first layer is reported, not silently dropp
     ';TYPE:Skirt/Brim', 'G0 X96 Y96 Z0.4', 'G1 X124 Y96 Z0.4 E1 F1800',
     '; printing object A', 'G0 X100 Y100 Z0.4', 'G1 X120 Y100 Z0.4 E1 F1800', '; stop printing object A',
   ].join('\n');
-  const res = sequenceToolpath(multiSkirtGcode);
+  const res = sequenceToolpath(multiSkirtGcode, { internals: true });
   assert.equal(res.feasible, true);
-  assert.equal(res.extracted.droppedNonObject.moves, 1);
+  assert.equal(res.internals.extracted.droppedNonObject.moves, 1);
   assert.ok(res.warnings.some(w => /1 extruding move\(s\) outside any object label .*not emitted/.test(w)), res.warnings.join('\n'));
   const clean = sequenceToolpath(fixture('interleaved-tall-sbs.gcode'), { colours: 'red,blue' });
   assert.ok(!clean.warnings.some(w => /not emitted/.test(w)));
@@ -836,4 +840,62 @@ test('gcode-sequence CLI: --json PATH before the input, --json - for stdout, tex
   assert.equal(runSequenceCli([input, '--max-states', 'x']).status, 2);
   assert.equal(runSequenceCli([input, '--planner', 'bogus']).status, 2);
   assert.equal(runSequenceCli([input, '--bogus']).status, 2);
+});
+
+test('Clusters: objects too close to print apart are planned as one layer-by-layer unit', () => {
+  // A and B are 2 mm apart: the nozzle body (r 4 mm + margin) reaches the neighbour, so neither
+  // may lead by a single layer. Without clustering no banded plan exists (the fixed solver
+  // agrees); as one unit they print layer by layer, and C (short, far) is printed in one go.
+  const touching = (colours, far = { x0: 180, y0: 30, height: 12 }) => buildInterleavedPlate([
+    { name: 'A', x0: 50, y0: 95, x1: 60, y1: 105, height: 30 },
+    { name: 'B', x0: 62, y0: 95, x1: 72, y1: 105, height: 30 },
+    { name: 'C', x0: far.x0, y0: far.y0, x1: far.x0 + 10, y1: far.y0 + 10, height: far.height },
+  ]);
+
+  // Same colour cluster + far cube of another colour: 1 change.
+  const same = touching();
+  const sameRes = sequenceToolpath(same, { colours: 'red,red,blue', internals: true });
+  assertPlanInvariants(same, sameRes, 'cluster same colour');
+  assert.equal(sameRes.filament_changes, 1);
+  assert.deepEqual(sameRes.clusters.map(c => c.objects), [['A', 'B']]);
+  assert.equal(sameRes.clusters[0].evidence[0].parts[0], 'nozzle');
+  assert.equal(sequenceToolpath(same, { colours: 'red,red,blue', planner: 'fixed' }).feasible, false);
+
+  // Different-colour cluster: one change per layer (each layer starts with the colour the last
+  // one ended in: 15 layers -> 15 changes), plus one to the far object, which prints whole.
+  const diff = touching();
+  const diffRes = sequenceToolpath(diff, { colours: 'red,blue,green', internals: true });
+  assertPlanInvariants(diff, diffRes, 'cluster two colours');
+  const cSteps = diffRes.steps.filter(s => s.object === 'C');
+  assert.equal(cSteps.length, 1);
+  assert.equal(cSteps[0].colour_changes_within, undefined);
+  const inside = diffRes.steps.reduce((n, s) => n + (s.colour_changes_within || 0), 0);
+  assert.equal(inside, 15);
+  assert.equal(diffRes.filament_changes, 16);
+  for (const s of diffRes.steps) {
+    if (s.object !== 'C') assert.deepEqual(s.members, ['A', 'B']);
+  }
+
+  // A far object in the gantry's Y band is banded against the cluster: the cluster pauses
+  // (changes stay inside cluster steps) while the far object prints in one step.
+  const banded = touching(null, { x0: 180, y0: 95, height: 30 });
+  const bandedRes = sequenceToolpath(banded, { colours: 'red,blue,green', internals: true });
+  assertPlanInvariants(banded, bandedRes, 'cluster banded');
+  assert.equal(bandedRes.steps.filter(s => s.object === 'C').length, 1);
+  assert.ok(bandedRes.steps.filter(s => s.object === '[A + B]').length >= 2);
+
+  // Objects that can print apart are not clustered (the fixtures' cubes are 90+ mm apart).
+  assert.deepEqual(sequenceToolpath(fixture('interleaved-tall-sbs.gcode'), { colours: 'red,blue' }).clusters, []);
+});
+
+test('Two label blocks of one object on one layer in different tools are a user-facing mid-layer rejection', () => {
+  const gcode = [
+    'G90', 'M83', 'G1 X10 Y10 Z0.2',
+    ';LAYER_CHANGE', ';Z:0.2',
+    '; printing object A', 'T0', 'G0 X10 Y10 Z0.2', 'G1 X20 Y10 Z0.2 E1 F1800', '; stop printing object A',
+    '; printing object A', 'T1', 'G0 X10 Y12 Z0.2', 'G1 X20 Y12 Z0.2 E1 F1800', '; stop printing object A',
+  ].join('\n');
+  for (const planner of ['adaptive', 'fixed']) {
+    assert.throws(() => sequenceToolpath(gcode, { planner }), (err) => err instanceof InputError && /mid-layer colour\/tool change/.test(err.message));
+  }
 });

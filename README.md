@@ -232,9 +232,10 @@ How it plans:
 - Each object is a stack of layer slices. A **step** prints one object from its current height up to a higher candidate height in one colour. A step never crosses a colour boundary; boundaries come from the file's tool / `M600` state per layer, or from `--colours`.
 - **Candidate heights** per object (snapped to real layer tops, about a dozen at most): the top, every colour boundary, `--split-at` heights, the clearance ladder (multiples of the extruder/gantry clearance, 20 mm on the MK4), and each neighbour's heights ± that clearance, so a band can stop exactly where a neighbour's gantry conflict begins.
 - **Feasibility** of a step comes from the phase-1 checker only: its descent, layers and glue moves run through `checkMoves` against the deposits of every other object at its current height plus the object's own lower layers (decomposed per object, which is exact because deposits combine by per-cell maximum).
-- **Search:** A\* over (per-object height, loaded colour), with an admissible bound on the remaining colour changes. When the plate exceeds `--max-states`, it switches to a beam search, then to a depth-first search that finds a feasible plan whenever one exists over the candidates. If the emitted file fails verification, the planner retries with finer candidates and then with the fixed-split solver.
+- **Clusters:** objects so close that neither may lead the other by a single layer (the checker decides, typically the nozzle body reaching the neighbour) are planned as one unit printed layer by layer. Each layer starts with the colour the previous one ended in, so a two-colour cluster costs one `M600` per layer, issued at the safe plane. The cluster is still banded against the rest of the plate.
+- **Search:** A\* over (per-unit height, loaded colour), with an admissible bound on the remaining colour changes. When the plate exceeds `--max-states`, it switches to a beam search, then to a depth-first search for any feasible plan within its node budget. If the emitted file fails verification, the planner retries with finer candidates, then falls back to the fixed-split solver; the report names the planner that produced the plan.
 
-The report (text on stdout, JSON with `--json`) lists the steps and compares the plan's filament changes and estimated time with the file's own order and with printing whole objects one after another. Example, two 36 mm cubes side by side (the gantry rules out printing either one whole first):
+The report (text on stdout, JSON with `--json`) lists the steps and compares the plan's filament changes and estimated time with the file's own order and with printing whole objects one after another. That last baseline is judged by the feasibility tables only and is marked as not verified. Example, two 36 mm cubes side by side (the gantry rules out printing either one whole first):
 
 ```
 Plan: 3 step(s), 2 filament change(s), est. 12m 32s (A*, fewest changes over the candidate heights, 33 states)
@@ -246,9 +247,11 @@ Plan: 3 step(s), 2 filament change(s), est. 12m 32s (A*, fewest changes over the
    3  fx_tall_left.stl id:0 copy 0     19.80    36.00  red
 Compared with:
   file order          239 change(s), 8h 06m
-  sequential objects  infeasible
+  sequential objects  infeasible (not verified)
 Verified collision-free: yes
 ```
+
+From JavaScript: `import { sequenceToolpath } from './lib/plan.mjs'` (`lib/sequence.mjs` holds slice extraction, the emitter and the fixed-split solver).
 
 | Option | Default | Description |
 |---|---|---|
