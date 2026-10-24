@@ -170,3 +170,121 @@ for (const mode of ['tool', 'feature']) {
     }
   });
 }
+
+// Pre-refactor gcode-sheet predicate, kept verbatim as the reference for lib/toolpath.mjs.
+function referenceIsLayerMarker(str, start, end) {
+  while (start < end && str.charCodeAt(start) <= 32) start++;
+  return (str.startsWith(';LAYER_CHANGE', start) &&
+      str.slice(start + 13, end).trim() === '') ||
+    (str.startsWith(';LAYER:', start) &&
+      /^\d+\s*$/.test(str.slice(start + 7, end)));
+}
+
+test('layer markers: trailing whitespace allowed, only integer Cura layers', async () => {
+  const { isLayerMarker, hasLayerMarkersInText, hasLayerMarkers } = await import('../lib/toolpath.mjs');
+  const cases = [
+    [';LAYER_CHANGE', true],
+    [';LAYER_CHANGE ', true],
+    [';LAYER_CHANGE\t \t', true],
+    ['  ;LAYER_CHANGE', true],
+    [';LAYER_CHANGED', false],
+    [';LAYER_CHANGE x', false],
+    [';LAYER:3', true],
+    [';LAYER:3  ', true],
+    [';LAYER:0', true],
+    [';LAYER:1.5', false],
+    [';LAYER:0 ; note', false],
+    [';LAYER:-1', false],
+    [';LAYER:', false],
+    [';LAYER: 3', false],
+    [';LAYER:1e3', false],
+  ];
+  for (const [line, want] of cases) {
+    assert.equal(isLayerMarker(line, 0, line.length), want, JSON.stringify(line));
+    assert.equal(hasLayerMarkersInText(`G1 X1\n${line}\nG1 X2\n`), want, JSON.stringify(line));
+    const file = path.join(dir, `marker-${serial++}.gcode`);
+    fs.writeFileSync(file, `G1 X1\r\n${line}\r\nG1 X2\r\n`);
+    assert.equal(hasLayerMarkers(file), want, JSON.stringify(line));
+  }
+
+  // Property: identical to the pre-refactor predicate on random marker-like lines.
+  let seed = 12345;
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) >>> 0; return seed % n; };
+  const pieces = [';LAYER_CHANGE', ';LAYER:', ';LAYER', ' ', '\t', ' ', '0', '7', '42', '.', '5', '-', 'e', ';', 'x', ' note'];
+  for (let i = 0; i < 5000; i++) {
+    let line = '';
+    const n = 1 + rnd(5);
+    for (let k = 0; k < n; k++) line += pieces[rnd(pieces.length)];
+    const pad = ' '.repeat(rnd(3));
+    const str = pad + line + pad;
+    const start = pad.length > 0 ? rnd(pad.length + 1) : 0;
+    assert.equal(isLayerMarker(str, start, str.length), referenceIsLayerMarker(str, start, str.length), JSON.stringify(str));
+  }
+});
+
+test('walkGcode skips the layer-marker pre-scan when includeStart is set', async () => {
+  const { walkGcode, loadToolpath } = await import('../lib/toolpath.mjs');
+  const marked = 'G1 X1 Y1 Z0.2 E1\n;LAYER_CHANGE\n;Z:0.2\nG1 X2 E1\n';
+  const markerless = 'G1 X1 Y1 Z0.2 E1\nG1 X2 E1\n';
+
+  assert.equal(walkGcode(marked, { isText: true, includeStart: true }).hasMarkers, null);
+  assert.equal(walkGcode(marked, { isText: true }).hasMarkers, true);
+  assert.equal(walkGcode(markerless, { isText: true }).hasMarkers, false);
+
+  // loadToolpath still reports the flag correctly either way.
+  for (const includeStart of [false, true]) {
+    assert.equal(loadToolpath(marked, { isText: true, includeStart }).hasLayerMarkers, true);
+    assert.equal(loadToolpath(markerless, { isText: true, includeStart }).hasLayerMarkers, false);
+  }
+  // The start block is only skipped when markers exist and includeStart is unset.
+  assert.equal(loadToolpath(marked, { isText: true }).moves[0].inStart, true);
+  assert.equal(loadToolpath(marked, { isText: true, includeStart: true }).moves[0].inStart, false);
+});
+
+test('M486 firmware object labels give the same objects and attribution as comment labels', async () => {
+  const { loadToolpath } = await import('../lib/toolpath.mjs');
+  const body = (start, stop) => [
+    ';LAYER_CHANGE', ';Z:0.2',
+    start(0), 'G1 X10 Y10 Z0.2', 'G1 X20 Y10 E1 F1800', stop(0),
+    start(1), 'G1 X50 Y50 Z0.2', 'G1 X60 Y50 E1 F1800', stop(1),
+    ';LAYER_CHANGE', ';Z:0.4',
+    start(1), 'G1 X50 Y50 Z0.4', 'G1 X60 Y50 E1 F1800', stop(1),
+  ];
+  const names = ['Cube id:0 copy 0', 'Ball id:1 copy 0'];
+  const comments = ['G90', 'M83', ...body(n => `; printing object ${names[n]}`, n => `; stop printing object ${names[n]}`)].join('\n');
+  // Declaration block (S, A, S-1 per object) as PrusaSlicer writes it, names from M486 A.
+  const m486 = ['G90', 'M83', 'M486 S0', `M486 A${names[0]}`, 'M486 S-1', 'M486 S1', `M486 A${names[1]}`, 'M486 S-1',
+    ...body(n => `M486 S${n}`, () => 'M486 S-1')].join('\n');
+  // Names from the objects_info header only.
+  const info = [`; objects_info = ${JSON.stringify({ objects: names.map(name => ({ name, polygon: [] })) })}`,
+    'G90', 'M83', ...body(n => `M486 S${n}`, () => 'M486 S-1')].join('\n');
+
+  const ref = loadToolpath(comments, { isText: true });
+  for (const text of [m486, info]) {
+    const tp = loadToolpath(text, { isText: true });
+    assert.equal(tp.hasObjectLabels, true);
+    assert.deepEqual(tp.objects.map(o => [o.name, o.moveCount]), ref.objects.map(o => [o.name, o.moveCount]));
+    assert.deepEqual(tp.moves.filter(m => m.extruding).map(m => m.object), ref.moves.filter(m => m.extruding).map(m => m.object));
+    assert.deepEqual(tp.commands.filter(c => c.kind === 'object_start' || c.kind === 'object_stop').slice(-6).map(c => [c.kind, c.object]),
+      ref.commands.filter(c => c.kind === 'object_start' || c.kind === 'object_stop').map(c => [c.kind, c.object]));
+  }
+});
+
+test('M486: an unnamed object gets a generated name; the first name seen for an id is kept', async () => {
+  const { loadToolpath } = await import('../lib/toolpath.mjs');
+  const layer = (start) => [';LAYER_CHANGE', ';Z:0.2', start, 'G1 X10 Y10 Z0.2', 'G1 X20 Y10 E1 F1800', 'M486 S-1'];
+  const unnamed = loadToolpath(['G90', 'M83', ...layer('M486 S0')].join('\n'), { isText: true });
+  assert.equal(unnamed.hasObjectLabels, true);
+  assert.deepEqual(unnamed.objects.map(o => [o.name, o.moveCount]), [['object 0', 1]]);
+
+  const info = `; objects_info = ${JSON.stringify({ objects: [{ name: 'Cube', polygon: [] }] })}`;
+  const conflicting = loadToolpath([info, 'G90', 'M83', 'M486 S0', 'M486 AOther', 'M486 S-1', ...layer('M486 S0')].join('\n'), { isText: true });
+  assert.deepEqual(conflicting.objects.filter(o => o.moveCount > 0).map(o => o.name), ['Cube']);
+  assert.ok(!conflicting.objects.some(o => o.name === 'Other'));
+
+  // A real name arriving after the placeholder was assigned replaces it (only placeholders are
+  // replaceable): the moves after it, and every later block of that id, use the real name.
+  const late = loadToolpath(['G90', 'M83', 'M486 S0', 'G1 X10 Y10 Z0.2', 'M486 ACube', 'G1 X20 Y10 E1 F1800', 'M486 S-1',
+    ...layer('M486 S0').slice(0, -1), 'M486 AOther', 'G1 X30 Y10 E1', 'M486 S-1'].join('\n'), { isText: true });
+  assert.deepEqual(late.objects.filter(o => o.moveCount > 0).map(o => o.name), ['Cube']);
+});

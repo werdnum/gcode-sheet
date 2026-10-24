@@ -184,3 +184,123 @@ See [runtime and PNG encoding measurements](docs/performance.md) for comparisons
 | Medium 4× Benchy (Before) | Medium 4× Benchy (After) |
 |---|---|
 | ![Medium before](docs/medium-before.png) | ![Medium after](docs/medium-after.png) |
+
+## Print-Head Collision Checker (`gcode-collide`)
+
+`gcode-collide` checks a sliced `.gcode` or `.bgcode` file against a 3D printer head geometry profile (`profiles/mk4.json` by default) to detect collisions between any already-deposited material and the moving head (nozzle, heater block, print-fan shroud, extruder body, X gantry; including `G28` homing and `M600` filament-change park moves).
+
+The built-in `mk4` profile models the head as overlapping parts in nozzle-tip coordinates (x, y relative to the tip, z up from it); parts marked `measured: false` are conservative placeholders, and every report warns about them until they are measured:
+
+| Part | Shape | Extent | Source |
+|---|---|---|---|
+| `nozzle_cone` | cylinder r 2.5 | z 0–2.5 | E3D Prusa Nextruder nozzle drawing (conservative) |
+| `nozzle_hex` | cylinder r 4.5 | z 2.5–5 | E3D drawing: 7 mm hex about 2.5 mm above the tip |
+| `heater_block` | box x ±12, y ±12 | z 5–13 | placeholder (block + silicone sock) |
+| `fan_shroud` | box x −30…12, y −22…12 | z 4–13 | placeholder for the MK4 print-fan duct (left/front of the nozzle), deliberately generous |
+| `extruder` | cylinder r 45 | z 13–200 | PrusaSlicer `*commonMK4*`: `extruder_clearance_radius = 45`, `extruder_clearance_height = 13` |
+| `gantry` | box x ±1000, y −30…45 | z 20–400 | forum: "a bit over 20 mm" from the tip to the X-axis rods; Y extents are a guess |
+
+`mk4s` currently reuses this geometry; the MK4S's 360° fan shroud sits only about 3 mm above the tip, so measure it before relying on the result.
+
+```bash
+node gcode-collide.mjs plate.bgcode --printer mk4 --grid 1.0 --margin 0.5 --png collision.png
+# Or via Nix:
+nix run .#collide -- plate.bgcode --png collision.png
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--printer NAME\|PATH` | `mk4` | Built-in profile (`mk4`) or path to a custom JSON/YAML printer profile |
+| `--grid MM` | `1.0` | Deposited-material height-map grid resolution in mm |
+| `--margin MM` | `0.5` | Horizontal safety margin added to deposited widths in mm |
+| `--json PATH` | *(stdout)* | Also write the JSON collision report to `PATH` |
+| `--png PATH` | *(none)* | Render the deposited geometry up to the first collision with the offending head parts overlaid (a render failure is added to `warnings` and does not change the exit status) |
+
+Exit status: `0` = no collision, `1` = collision detected, `2` = error.
+
+### Measuring your printer
+
+The unmeasured parts are guesses on the safe side, so they reject some plates a real head would clear. With calipers, the head homed and the nozzle clean, measure:
+
+1. Nozzle tip to the lowest edge of the print-fan shroud, and how far the shroud reaches left, right, in front of and behind the nozzle.
+2. Nozzle tip to the bottom of the heater block / silicone sock, and the block's extents around the nozzle.
+3. Nozzle tip to the underside of the X-axis extrusion / rods, and how far the carriage and beam extend in front of and behind the nozzle.
+4. Anything else that hangs lower than 13 mm within 45 mm of the nozzle (cables, the hotend fan, the load-cell housing).
+
+Then copy `profiles/mk4.json`, put the numbers in the matching parts (z ranges are heights above the tip; box x/y are offsets from the nozzle, +x right, +y towards the back of the printer; a part may overlap others), set `"measured": true` on the parts you measured, and pass the file with `--printer my-mk4.json` to either tool.
+
+Parts whose `id` starts with `nozzle` are the nozzle itself. A part is **wide** when its horizontal reach (the shortest distance from the nozzle axis to its outer edge: a cylinder's `r`, a box's smallest of `-x_lo`, `x_hi`, `-y_lo`, `y_hi`) is at least 30 mm. On the MK4 that is the extruder body and the gantry, not the fan shroud or the heater block. The profile's clearance height (what PrusaSlicer calls `extruder_clearance_height`) is the lowest `z_lo` of a wide part, or the highest part start if none is wide. It sets the wipe-tower height limit, `--split-at clearance` (every wide part's `z_lo`) and the planner's clearance ladder; collisions are always checked against every part.
+
+### Library Interface
+
+```js
+import { loadToolpath, loadProfile, DepositStore, checkMoves } from './lib/collide.mjs';
+
+const profile = loadProfile('mk4');
+const path = loadToolpath('plate.bgcode');
+const store = new DepositStore(profile, { grid: 1 });
+store.paint(path.movesOf(objectA));
+const hits = checkMoves(profile, store, path.movesOf(objectB));
+```
+
+## Multicolour Sequential Planner (`gcode-sequence`)
+
+`gcode-sequence` takes a multi-object G-code / `.bgcode` slice (sliced with PrusaSlicer's **Label objects** enabled; layer-interleaved or "complete objects") and a colour per object, and plans the fastest collision-free way to print it on a single-extruder printer with `M600` colour changes. It minimises the number of filament changes first and the added travel second. It emits a normalised (`G21`, `G90`, `M83`) G-code file that keeps all non-motion printer state, and accepts the plan only if `gcode-collide` verifies the emitted file clean.
+
+```bash
+node gcode-sequence.mjs plate.gcode -o sequenced.gcode --colours red,blue,red
+# Or via Nix:
+nix run .#sequence -- plate.gcode -o sequenced.gcode --colours ObjA=red,ObjB=blue --json report.json
+```
+
+How it plans:
+
+- Each object is a stack of layer slices. A **step** prints one object from its current height up to a higher candidate height in one colour. A step never crosses a colour boundary; boundaries come from the file's tool / `M600` state per layer, or from `--colours`.
+- **Colour regions:** an object whose parts use different filaments (say a raised inscription on extruder 2, with a tool change on every text layer) is split into one planning unit per colour. Each region's layers are rasterised on the deposit grid, and a layer that rests on another region's layer below may print only after that one (**support dependency**). So a white L with black text prints the whole L and then the text when the L's upright is out of the head's reach (1 change), or white, text, then the rest of the upright when it is close (2 changes). The checker decides which.
+- **Candidate heights** per object (snapped to real layer tops, about a dozen at most): the top, every colour boundary, `--split-at` heights, the clearance ladder (multiples of the heights where the wide parts begin: 13 mm extruder body and 20 mm gantry on the MK4), and each neighbour's heights ± the height of every head part above the nozzle that can reach that neighbour from this object's footprint, or the other way round (on the MK4: 4 and 5 mm for the fan shroud and heater block of a close neighbour, 13 mm for one within 45 mm, 20 mm for the gantry), so a band can stop exactly where a neighbour's conflict with some part begins.
+- **Feasibility** of a step comes from the phase-1 checker only: its descent, layers and glue moves run through `checkMoves` against the deposits of every other object at its current height plus the object's own lower layers (decomposed per object, which is exact because deposits combine by per-cell maximum).
+- **Clusters:** units with material side by side on the same layers, so close that neither may lead the other by a single layer (the checker decides, typically the nozzle body reaching the neighbour), are planned as one unit printed layer by layer. Vertically stacked regions are ordered by the support dependencies instead. Each layer starts with the colour the previous one ended in, so a two-colour cluster costs one `M600` per layer, issued at the safe plane. The cluster is still banded against the rest of the plate.
+- **Search:** A\* over (per-unit height, loaded colour), with an admissible bound on the remaining colour changes. When the plate exceeds `--max-states`, it switches to a beam search, then to a depth-first search for any feasible plan within its node budget. If the emitted file fails verification, the planner retries with finer candidates, then falls back to the fixed-split solver; the report names the planner that produced the plan.
+
+- **Never worse than the file:** with either planner the file's own order is a candidate too. Unless a plan needs fewer filament changes (or the file's own order collides), the result is "no improvement": the input file is copied byte for byte to the output, the report describes the kept file and says why (`planner.name: "file-order"`, the rejected plan or failure under `planner.considered`; `travel_distance_mm` is `null`, as it is not estimated for the file's own order), and the exit status is 0. A file without colour changes is only checked, not planned, unless it collides.
+- **Changes are counted from what the start G-code leaves loaded** (its last tool select; nothing known for an `M600` file without one): a plan whose first step needs another colour starts with a change, which is emitted and counted.
+- **MMU files:** when the objects use more than one tool and the file changes colour only with tool changes (`T<n>` after the first object, no `M600`), the plan's changes are emitted as `T<n>`, and a change is estimated at the file's `filament_unload_time + filament_load_time` (from the slicer's config block; 30 s if absent or zero, PrusaSlicer's default for many filaments) instead of the profile's `change_cost_s` for `M600` (120 s); the report says which (`change_cost`). Purging is not regenerated (the wipe tower is dropped), so such an output is for analysis only, and the report warns. A file that passes through keeps its wipe tower.
+- Object labels may be comments (`; printing object`) or firmware labels (`M486 S<n>` / `M486 A<name>`, names also from the `; objects_info` header; the first name seen for an id is kept, and an id never named becomes `object <n>`).
+
+The report (text on stdout, JSON with `--json`) lists the steps and compares the plan's filament changes and estimated time with the file's own order and with printing whole objects one after another. That last baseline is judged by the feasibility tables only and is marked as not verified. Example, two 36 mm cubes side by side, about 92 mm apart in X in the same Y band. The extruder body (r 45) and the fan shroud do not reach across, but the X gantry, 20 mm above the nozzle and spanning all of X, rules out printing either cube whole first (a finished 36 mm cube is more than 20 mm above the other's first layer). The left cube can pause anywhere from 16 mm (resuming next to the finished right cube puts the gantry at 36 mm or more) up to about 20 mm (the gantry is 20 mm above the right cube's first layer); only the gantry's 20 mm level reaches the other cube, so the candidates are the same as with the earlier head model and the planner pauses at 19.8 mm. Our estimates use nominal feedrates (no acceleration, no wipe tower); when the file carries the slicer's `; estimated printing time (normal mode)`, the report shows it too (`slicer_estimate_s`), and a pass-through leads with it:
+
+```
+Plan: 3 step(s), 2 filament change(s), est. 12m 32s at nominal feedrate (A*, fewest changes over the candidate heights, 33 states)
+Slicer estimate: 13m 03s for the file as sliced (its own order; the nominal-feedrate estimates here ignore acceleration and the wipe tower)
+Colour change cost: 120 s (profile change_cost_s, M600)
+   #  object                          Z from     Z to  colour
+   1  fx_tall_left.stl id:0 copy 0      0.00    19.80  red
+      -- M600: red -> blue
+   2  fx_tall_right.stl id:1 copy 0     0.00    36.00  blue
+      -- M600: blue -> red
+   3  fx_tall_left.stl id:0 copy 0     19.80    36.00  red
+Compared with:
+  file order          239 change(s), 8h 06m
+  sequential objects  infeasible (not verified)
+Verified collision-free: yes
+```
+
+From JavaScript: `import { sequenceToolpath } from './lib/plan.mjs'` (`lib/sequence.mjs` holds slice extraction, the emitter and the fixed-split solver).
+
+| Option | Default | Description |
+|---|---|---|
+| `-o`, `--output PATH` | *(none)* | Write the resequenced G-code to `PATH` (or give it as the second positional) |
+| `--printer NAME\|PATH` | `mk4` | Built-in profile (`mk4`) or path to a custom JSON/YAML printer profile |
+| `--colours SPEC` | *(from tool / `M600`)* | Colour per object (`c1,c2,...` by object index or `ObjA=c1,ObjB=c2`); an entry colours the whole object, so it is refused for an object the file itself changes tool/colour on (leave such objects out to use the file's colours) |
+| `--split-at HEIGHTS` | *(none)* | Extra candidate heights in mm (e.g. `20`, or `clearance` for the heights where the wide head parts begin: `13,20` on the MK4) |
+| `--grid MM` | `1.0` | Deposited-material grid resolution in mm |
+| `--margin MM` | `0.5` | Horizontal safety margin in mm |
+| `--max-candidates N` | `12` | Candidate pause heights per object (mandatory ones are always kept) |
+| `--max-states N` | `200000` | A\* expansion budget before switching to beam search |
+| `--beam N` | `2000` | Beam width of the fallback search |
+| `--planner adaptive\|fixed` | `adaptive` | `fixed` = the earlier solver over chunks cut only at `--split-at` and colour boundaries (needs one colour per object layer) |
+| `--json PATH` | *(none)* | Write the JSON report to `PATH`; `-` prints it to stdout instead of the text report |
+
+Non-object extrusion other than the first-layer skirt/brim (upper skirt layers, a short wipe tower) is not emitted; when the input has any, the report includes a warning.
+
+Exit status: `0` = feasible & verified collision-free, `1` = infeasible plate (prints conflict diagnostics), `2` = error.
