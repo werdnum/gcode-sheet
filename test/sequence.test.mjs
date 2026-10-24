@@ -17,6 +17,11 @@ import {
   isOrderPairwiseFeasible,
   sequenceToolpath,
 } from '../lib/sequence.mjs';
+import {
+  buildPlanModel,
+  isStepFeasible,
+  composeStepCheck,
+} from '../lib/plan.mjs';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcode-sequence-test-'));
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -191,25 +196,30 @@ test('Phase 2 fixtures: tall front/back cubes at asymmetric 38mm Y gap automatic
   assert.equal(checkToolpath(res.gcode, 'mk4').collides, false);
 });
 
-test('Phase 2 fixtures: tall side-by-side 34mm cubes are infeasible whole, but feasible with --split-at 20 in 2 changes', () => {
+test('Phase 2 fixtures: tall side-by-side 34mm cubes: fixed solver needs --split-at 20, the planner finds 2 changes on its own', () => {
   const gcode = buildInterleavedPlate([
     { name: 'Left34', x0: 50, y0: 95, x1: 60, y1: 105, height: 34 },
     { name: 'Right34', x0: 150, y0: 95, x1: 160, y1: 105, height: 34 },
   ]);
 
-  const whole = sequenceToolpath(gcode, { colours: 'red,blue' });
+  const whole = sequenceToolpath(gcode, { colours: 'red,blue', planner: 'fixed' });
   assert.equal(whole.feasible, false);
   assert.ok(whole.diagnostics.length > 0);
   assert.match(whole.diagnostics[0].suggestion, /--split-at 20/);
 
-  const split = sequenceToolpath(gcode, { colours: 'red,blue', splitAt: [20] });
+  const split = sequenceToolpath(gcode, { colours: 'red,blue', splitAt: [20], planner: 'fixed' });
   assert.equal(split.feasible, true);
   assert.equal(split.verified, true);
-  // Optimal order prints both Z<=20 bands first, then continues same-colour Z<=top band without changing filament,
-  // then switches filament once to print the remaining Z<=top band -> 2 filament changes total!
   assert.equal(split.filament_changes, 2);
   assert.equal(split.order.length, 4);
-  assert.equal(checkToolpath(split.gcode, 'mk4').collides, false);
+
+  const planned = sequenceToolpath(gcode, { colours: 'red,blue' });
+  assert.equal(planned.feasible, true);
+  assert.equal(planned.verified, true);
+  assert.equal(planned.filament_changes, 2);
+  assert.equal(planned.steps.length, 3);
+  assert.equal(planned.comparison.sequential_objects.feasible, false);
+  assert.equal(checkToolpath(planned.gcode, 'mk4').collides, false);
 });
 
 // Deterministic PRNG for property tests
@@ -412,9 +422,11 @@ test('gcode-sequence CLI: exit codes 0, 1, 2, output G-code verification, and --
   assert.equal(parsedOk.verified, true);
   assert.equal(parsedOk.filament_changes, 1);
 
+  // 2 mm apart: the nozzle body (r 4 mm) overlaps the neighbour, so the cubes can only be
+  // printed layer by layer, which no candidate-height plan expresses.
   fs.writeFileSync(infeasibleIn, buildInterleavedPlate([
     { name: 'Tall1', x0: 50, y0: 95, x1: 60, y1: 105, height: 50 },
-    { name: 'Tall2', x0: 150, y0: 95, x1: 160, y1: 105, height: 50 },
+    { name: 'Tall2', x0: 62, y0: 95, x1: 72, y1: 105, height: 50 },
   ]));
   const infRes = runSequenceCli([infeasibleIn, '--colours', 'red,blue']);
   assert.equal(infRes.status, 1);
@@ -436,10 +448,12 @@ test('PrusaSlicer-sliced fixtures (bench/mk4.ini + --wipe): sequence real sliced
   assert.ok(fbSeq.order[1].includes('fx_tall_back_asym.stl'));
   assert.equal(fbSeq.filament_changes, 1);
 
-  // 2) Side-by-side 36mm cubes (with --wipe enabled): infeasible whole, feasible with --split-at 20 in 2 filament changes
+  // 2) Side-by-side 36mm cubes (with --wipe enabled): the fixed solver is infeasible whole and
+  // needs --split-at 20; the planner finds the same 2 changes without it.
   const sbsPlate = fx('interleaved-tall-sbs.gcode');
-  assert.equal(sequenceToolpath(sbsPlate, { colours: 'red,blue' }).feasible, false);
-  const sbsSplit = sequenceToolpath(sbsPlate, { colours: 'red,blue', splitAt: [20] });
+  assert.equal(sequenceToolpath(sbsPlate, { colours: 'red,blue', planner: 'fixed' }).feasible, false);
+  assert.equal(sequenceToolpath(sbsPlate, { colours: 'red,blue' }).filament_changes, 2);
+  const sbsSplit = sequenceToolpath(sbsPlate, { colours: 'red,blue', splitAt: [20], planner: 'fixed' });
   assert.equal(sbsSplit.feasible, true);
   assert.equal(sbsSplit.verified, true);
   assert.equal(sbsSplit.filament_changes, 2);
@@ -560,3 +574,266 @@ test('Phase 2 regressions: relative/M82 footers, M104 S0 / M221 S0 / M109 state,
   assert.equal(outFirstEx.y0, inFirstEx.y0);
 });
 
+
+// ---------------------------------------------------------------------------------------------
+// Adaptive planner (lib/plan.mjs)
+// ---------------------------------------------------------------------------------------------
+
+const fixture = (name) => fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
+const FIXTURES = [
+  'interleaved-tall-sbs.gcode',
+  'interleaved-tall-fb-asym.gcode',
+  'seq-short-sbs.gcode',
+  'seq-tall-fb-far.gcode',
+  'seq-tall-sbs.gcode',
+];
+const COLOUR_SETS = ['red,blue', 'blue,red', 'red,red'];
+
+/**
+ * Plan invariants that hold for every accepted plan:
+ * - the emitted file verifies clean with the phase-1 checker;
+ * - each object's steps are contiguous and in Z order (0 -> top) and together cover every
+ *   layer slice of the object exactly once, and no step crosses a colour boundary;
+ * - the emitted file preserves per-object extrusion totals, extruding move counts and bboxes.
+ */
+function assertPlanInvariants(input, res, label) {
+  assert.equal(res.feasible, true, `${label}: infeasible`);
+  assert.equal(res.verified, true, `${label}: not verified`);
+  assert.equal(checkToolpath(res.gcode, 'mk4').collides, false, `${label}: emitted file collides`);
+
+  const { extracted } = res;
+  const byObject = new Map();
+  for (const c of res.plan.chunks) {
+    if (!byObject.has(c.object)) byObject.set(c.object, []);
+    byObject.get(c.object).push(c);
+  }
+  for (const [name, slices] of extracted.objectLayerSlices) {
+    if (slices.length === 0) continue;
+    const steps = byObject.get(name) || [];
+    assert.ok(steps.length > 0, `${label}: ${name} never printed`);
+    let z = 0;
+    const covered = [];
+    for (const st of steps) {
+      assert.ok(Math.abs(st.zLo - z) < 1e-6, `${label}: ${name} step starts at ${st.zLo}, expected ${z}`);
+      assert.ok(st.zHi > st.zLo, `${label}: ${name} step not upward`);
+      assert.equal(new Set(st.slices.map(sl => sl.colour)).size, 1, `${label}: step crosses a colour boundary`);
+      assert.equal(st.colour, st.slices[0].colour);
+      covered.push(...st.slices);
+      z = st.zHi;
+    }
+    const sorted = [...slices].sort((a, b) => a.z - b.z || a.layer - b.layer);
+    assert.equal(covered.length, sorted.length, `${label}: ${name} layer count`);
+    covered.forEach((sl, i) => assert.equal(sl, sorted[i], `${label}: ${name} slice ${i} out of order or repeated`));
+  }
+
+  const inPath = loadToolpath(input);
+  const outPath = loadToolpath(res.gcode);
+  for (const inObj of inPath.objects) {
+    const outObj = outPath.objects.find(o => o.name === inObj.name);
+    assert.ok(outObj, `${label}: missing ${inObj.name}`);
+    assert.equal(outObj.moveCount, inObj.moveCount, `${label}: ${inObj.name} move count`);
+    assert.ok(Math.abs(outObj.extrusionLength - inObj.extrusionLength) < 1e-3, `${label}: ${inObj.name} extrusion`);
+    assert.deepEqual(outObj.bbox, inObj.bbox);
+    // Within one object the emitted layers only ever go up.
+    const zs = outPath.moves.filter(m => m.extruding && !m.inStart && m.object === inObj.name).map(m => m.z0);
+    for (let i = 1; i < zs.length; i++) assert.ok(zs[i] >= zs[i - 1] - 1e-6, `${label}: ${inObj.name} Z goes down`);
+  }
+}
+
+test('Planner properties over the PrusaSlicer fixtures: verified, Z-ordered exact layer cover, totals preserved, never more changes than the fixed-split solver', () => {
+  for (const name of FIXTURES) {
+    for (const colours of COLOUR_SETS) {
+      for (const splitAt of [[], [20]]) {
+        const label = `${name} ${colours} split=${splitAt}`;
+        const res = sequenceToolpath(fixture(name), { colours, splitAt });
+        assertPlanInvariants(fixture(name), res, label);
+        const fixed = sequenceToolpath(fixture(name), { colours, splitAt, planner: 'fixed' });
+        if (fixed.feasible) {
+          assert.ok(res.filament_changes <= fixed.filament_changes, `${label}: planner ${res.filament_changes} > fixed ${fixed.filament_changes}`);
+        }
+        if (res.comparison.sequential_objects.feasible) {
+          assert.ok(res.filament_changes <= res.comparison.sequential_objects.filament_changes);
+        }
+        if (colours === 'red,red') assert.equal(res.filament_changes, 0, label);
+      }
+    }
+  }
+});
+
+test('Planner: tall side-by-side two-colour fixture prints in 3 bands with 2 changes (file order: 239)', () => {
+  // Both 36 mm cubes sit in the same Y band, so the X gantry (20 mm above the nozzle, spanning
+  // all of X) hits whichever cube is more than 20 mm taller than the layer being printed.
+  // One change would mean one colour printed completely first: a finished 36 mm cube next to a
+  // first layer at 0.3 mm (36 > 0.3 + 20), so it is infeasible (the sequential-objects
+  // comparison says so too) and 2 is the minimum. The plan: left to 19.8 (<= 0.3 + 20),
+  // M600, right 0 -> 36 (left stays within 20 mm of every right layer), M600, left 19.8 -> 36.
+  const res = sequenceToolpath(fixture('interleaved-tall-sbs.gcode'), { colours: 'red,blue' });
+  assertPlanInvariants(fixture('interleaved-tall-sbs.gcode'), res, 'sbs');
+  assert.equal(res.filament_changes, 2);
+  assert.equal(res.comparison.original_file.filament_changes, 239);
+  assert.equal(res.comparison.sequential_objects.feasible, false);
+  assert.equal(res.planner.method, 'astar');
+  assert.equal(res.planner.changes_optimal, true);
+  assert.deepEqual(res.steps.map(s => [s.object.split('.')[0], s.z_lo, s.z_hi, s.colour]), [
+    ['fx_tall_left', 0, 19.8, 'red'],
+    ['fx_tall_right', 0, 36, 'blue'],
+    ['fx_tall_left', 19.8, 36, 'red'],
+  ]);
+  assert.ok(res.estimated_time_s < res.comparison.original_file.estimated_time_s);
+  // Candidate heights include the clearance ladder (19.8 = 20 snapped down), the neighbour
+  // resume height (0.3 + 20 -> 20.1) and the top.
+  for (const c of res.planner.candidates) {
+    assert.ok(c.heights.includes(19.8) && c.heights.includes(20.1) && c.heights.includes(36));
+    assert.ok(c.heights.length <= 12);
+  }
+});
+
+test('Planner: front/back fixtures print sequentially in the order the asymmetric gantry allows', () => {
+  for (const colours of ['blue,red', 'red,blue']) {
+    const res = sequenceToolpath(fixture('interleaved-tall-fb-asym.gcode'), { colours });
+    assertPlanInvariants(fixture('interleaved-tall-fb-asym.gcode'), res, `fb-asym ${colours}`);
+    assert.equal(res.filament_changes, 1);
+    assert.equal(res.steps.length, 2);
+    assert.ok(res.steps[0].object.includes('fx_tall_front_asym.stl'));
+    assert.ok(res.steps[1].object.includes('fx_tall_back_asym.stl'));
+    assert.equal(res.comparison.sequential_objects.feasible, true);
+    assert.equal(res.comparison.sequential_objects.filament_changes, 1);
+    assert.equal(res.comparison.original_file.filament_changes, 239);
+  }
+  const far = sequenceToolpath(fixture('seq-tall-fb-far.gcode'), { colours: 'red,blue' });
+  assert.equal(far.filament_changes, 1);
+  assert.equal(far.steps.length, 2);
+});
+
+test('Planner feasibility tables agree with checkMoves on the composed DepositStore', () => {
+  // The planner checks each step against one object at a time and combines the verdicts; that
+  // is exact because DepositStore keeps per-cell maxima. Compose the real store (clone + paint)
+  // for every step from sampled states and compare.
+  const rng = makeRng(77);
+  const plates = [
+    loadToolpath(fixture('interleaved-tall-sbs.gcode')),
+    loadToolpath(buildInterleavedPlate([
+      { name: 'A', x0: 20, y0: 95, x1: 30, y1: 105, height: 50 },
+      { name: 'B', x0: 80, y0: 95, x1: 90, y1: 105, height: 30 },
+      { name: 'C', x0: 140, y0: 60, x1: 150, y1: 70, height: 44 },
+    ])),
+  ];
+  let compared = 0;
+  for (const tp of plates) {
+    const extracted = extractChunks(tp, { colours: 'red,blue,red' });
+    const model = buildPlanModel(extracted, {});
+    for (let trial = 0; trial < 40; trial++) {
+      const H = model.objects.map(o => Math.floor(rng() * (o.K + 1)));
+      for (let oi = 0; oi < model.objects.length; oi++) {
+        const o = model.objects[oi];
+        for (let j = H[oi] + 1; j <= o.K; j++) {
+          const predicted = isStepFeasible(model, H, oi, H[oi], j);
+          const real = composeStepCheck(model, extracted, H, oi, H[oi], j).hits.length === 0;
+          if (predicted) assert.ok(real, `predicted feasible but composed store collides (H=${H}, o=${oi}, j=${j})`);
+          if (o.steps[H[oi]][j].selfOk) assert.equal(predicted, real, `H=${H}, o=${oi}, j=${j}`);
+          compared++;
+        }
+      }
+    }
+  }
+  assert.ok(compared > 100);
+});
+
+test('Planner: taller and wider plates (2C+ towers, three in a row, beam fallback)', () => {
+  const row = (n, h, dx) => Array.from({ length: n }, (_, i) => ({
+    name: `R${i}`, x0: 20 + i * dx, y0: 95, x1: 30 + i * dx, y1: 105, height: h,
+  }));
+
+  // Two 50 mm towers side by side need 3 changes. With 2 changes (runs X, Y, X) the Y tower is
+  // printed whole while the X tower stands at some a; Y's first layer forces a <= 2 + 20, and
+  // X then resumes at a + 2 <= 24 next to a 50 mm tower (50 > 24 + 20): infeasible.
+  const pair = buildInterleavedPlate(row(2, 50, 100));
+  const pairRes = sequenceToolpath(pair, { colours: 'red,blue' });
+  assertPlanInvariants(pair, pairRes, 'pair50');
+  assert.equal(pairRes.filament_changes, 3);
+  assert.equal(pairRes.comparison.original_file.filament_changes, 49);
+
+  // Three in a row, outer two red: red bottoms, blue middle, red tops = 2 changes.
+  const three = buildInterleavedPlate(row(3, 36, 60));
+  const threeRes = sequenceToolpath(three, { colours: 'red,blue,red' });
+  assertPlanInvariants(three, threeRes, 'row3');
+  assert.equal(threeRes.filament_changes, 2);
+
+  // Forcing the beam search (no A* budget) still yields a verified plan, no better than A*.
+  const beamRes = sequenceToolpath(three, { colours: 'red,blue,red', maxStates: 1 });
+  assertPlanInvariants(three, beamRes, 'row3 beam');
+  assert.equal(beamRes.planner.method, 'beam');
+  assert.ok(beamRes.filament_changes >= threeRes.filament_changes);
+
+  const tinyBeam = sequenceToolpath(three, { colours: 'red,blue,red', maxStates: 1, beam: 1 });
+  assertPlanInvariants(three, tinyBeam, 'row3 beam=1');
+});
+
+test('Planner: in-file M600 colour boundaries are mandatory step boundaries', () => {
+  // An M600 before layer Z=10 recolours both objects from there up (single extruder).
+  const base = buildInterleavedPlate([
+    { name: 'L', x0: 50, y0: 95, x1: 60, y1: 105, height: 36 },
+    { name: 'R', x0: 150, y0: 95, x1: 160, y1: 105, height: 36 },
+  ]);
+  const gcode = base.replace(';Z:12.000\n', ';Z:12.000\nM600\n');
+  const res = sequenceToolpath(gcode);
+  assertPlanInvariants(gcode, res, 'm600');
+  assert.equal(res.comparison.original_file.filament_changes, 1);
+  assert.equal(res.filament_changes, 1);
+  for (const c of res.planner.candidates) assert.ok(c.heights.includes(10));
+  for (const st of res.steps) assert.ok(st.z_hi <= 10 || st.z_lo >= 10, `step ${st.id} crosses the colour boundary`);
+  assert.equal((res.gcode.match(/^M600$/gm) || []).length, 1);
+});
+
+test('Non-object extrusion above the first layer is reported, not silently dropped', () => {
+  const multiSkirtGcode = [
+    'G90', 'M83', 'G1 X0 Y0 Z0.2',
+    ';LAYER_CHANGE', ';Z:0.2', ';HEIGHT:0.2',
+    ';TYPE:Skirt/Brim', 'G0 X96 Y96 Z0.2', 'G1 X124 Y96 Z0.2 E1 F1800',
+    '; printing object A', 'G0 X100 Y100 Z0.2', 'G1 X120 Y100 Z0.2 E1 F1800', '; stop printing object A',
+    ';LAYER_CHANGE', ';Z:0.4', ';HEIGHT:0.2',
+    ';TYPE:Skirt/Brim', 'G0 X96 Y96 Z0.4', 'G1 X124 Y96 Z0.4 E1 F1800',
+    '; printing object A', 'G0 X100 Y100 Z0.4', 'G1 X120 Y100 Z0.4 E1 F1800', '; stop printing object A',
+  ].join('\n');
+  const res = sequenceToolpath(multiSkirtGcode);
+  assert.equal(res.feasible, true);
+  assert.equal(res.extracted.droppedNonObject.moves, 1);
+  assert.ok(res.warnings.some(w => /1 extruding move\(s\) outside any object label .*not emitted/.test(w)), res.warnings.join('\n'));
+  const clean = sequenceToolpath(fixture('interleaved-tall-sbs.gcode'), { colours: 'red,blue' });
+  assert.ok(!clean.warnings.some(w => /not emitted/.test(w)));
+});
+
+test('gcode-sequence CLI: --json PATH before the input, --json - for stdout, text report, planner options', () => {
+  const input = fixture('interleaved-tall-sbs.gcode');
+  const out = path.join(dir, `cli-out-${serial++}.gcode`);
+  const report = path.join(dir, `cli-report-${serial++}.json`);
+
+  // Regression: an option-valued --json used to swallow the input path.
+  const r1 = runSequenceCli(['--json', report, input, '-o', out, '--colours', 'red,blue']);
+  assert.equal(r1.status, 0, r1.stderr);
+  const parsed = JSON.parse(fs.readFileSync(report, 'utf8'));
+  assert.equal(parsed.filament_changes, 2);
+  assert.equal(parsed.steps.length, 3);
+  assert.equal(parsed.comparison.original_file.filament_changes, 239);
+  assert.equal(parsed.comparison.sequential_objects.feasible, false);
+  assert.equal(checkToolpath(out, 'mk4').collides, false);
+  assert.match(r1.stdout, /3 step\(s\), 2 filament change\(s\)/);
+  assert.match(r1.stdout, /M600: red -> blue/);
+  assert.match(r1.stdout, /fx_tall_right\.stl id:1 copy 0 +0\.00 +36\.00 +blue/);
+  assert.match(r1.stdout, /file order +239 change\(s\)/);
+
+  const r2 = runSequenceCli([input, '--colours', 'red,blue', '--json', '-', '--max-states', '1', '--beam', '50']);
+  assert.equal(r2.status, 0, r2.stderr);
+  const viaStdout = JSON.parse(r2.stdout);
+  assert.equal(viaStdout.planner.method, 'beam');
+  assert.equal(viaStdout.verified, true);
+
+  const r3 = runSequenceCli([input, '--colours', 'red,blue', '--planner', 'fixed', '--split-at', 'clearance', '--json', '-']);
+  assert.equal(r3.status, 0, r3.stderr);
+  assert.equal(JSON.parse(r3.stdout).filament_changes, 2);
+
+  assert.equal(runSequenceCli([input, '--json', input]).status, 2);
+  assert.equal(runSequenceCli([input, '--max-states', 'x']).status, 2);
+  assert.equal(runSequenceCli([input, '--planner', 'bogus']).status, 2);
+  assert.equal(runSequenceCli([input, '--bogus']).status, 2);
+});

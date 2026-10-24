@@ -1,25 +1,34 @@
 #!/usr/bin/env node
-// gcode-sequence.mjs: Phase 2 multicolour chunk sequencer CLI.
+// gcode-sequence.mjs: Phase 2 multicolour print planner CLI.
 import fs from 'node:fs';
+import path from 'node:path';
+import { parseArgs } from 'node:util';
 import { loadProfile } from './lib/profiles.mjs';
 import { sequenceToolpath } from './lib/sequence.mjs';
+import { DEFAULT_MAX_CANDIDATES, DEFAULT_MAX_STATES, DEFAULT_BEAM } from './lib/plan.mjs';
 
-function printUsage(stream = process.stdout) {
-  stream.write(
-    `Usage: gcode-sequence INPUT.(gcode|bgcode) [OUTPUT.gcode] [options]\n` +
-    `  -o, --output PATH         Write resequenced G-code to PATH\n` +
-    `  --printer NAME|PATH       Printer profile name ('mk4') or JSON/YAML file (default: mk4)\n` +
-    `  --colours SPEC            Colour assignment: "c1,c2,..." or "ObjA=c1,ObjB=c2"\n` +
-    `  --colors SPEC             Alias for --colours\n` +
-    `  --split-at HEIGHTS        Z split heights in mm (e.g. "20" or "20,40" or "clearance")\n` +
-    `  --grid MM                 Deposited-material grid cell size in mm (default: 1.0)\n` +
-    `  --margin MM               Safety clearance margin in mm (default: 0.5)\n` +
-    `  --json [PATH]             Also write JSON report to PATH (or stdout if no path / "-")\n` +
-    `  -h, --help                Print CLI usage help\n` +
-    `\n` +
-    `Prints a JSON sequencing report to stdout.\n` +
-    `Exit status: 0 = feasible sequence emitted/verified, 1 = infeasible plate, 2 = error.\n`
-  );
+const USAGE = `Usage: gcode-sequence INPUT.(gcode|bgcode) [OUTPUT.gcode] [options]
+  -o, --output PATH         Write resequenced G-code to PATH
+  --printer NAME|PATH       Printer profile name ('mk4') or JSON/YAML file (default: mk4)
+  --colours SPEC            Colour assignment: "c1,c2,..." or "ObjA=c1,ObjB=c2"
+  --colors SPEC             Alias for --colours
+  --split-at HEIGHTS        Extra candidate split heights in mm (e.g. "20", "20,40" or "clearance")
+  --grid MM                 Deposited-material grid cell size in mm (default: 1.0)
+  --margin MM               Safety clearance margin in mm (default: 0.5)
+  --max-candidates N        Candidate pause heights per object (default: ${DEFAULT_MAX_CANDIDATES})
+  --max-states N            A* expansion limit before falling back to beam search (default: ${DEFAULT_MAX_STATES})
+  --beam N                  Beam width of the fallback search (default: ${DEFAULT_BEAM})
+  --planner adaptive|fixed  'fixed' = old solver over --split-at chunks only (default: adaptive)
+  --json PATH               Write the JSON report to PATH ('-' = stdout instead of the text report)
+  -h, --help                Print CLI usage help
+
+Prints a human-readable plan to stdout (or JSON with --json -).
+Exit status: 0 = feasible plan emitted/verified, 1 = infeasible plate, 2 = error.
+`;
+
+function fail(msg) {
+  console.error(`gcode-sequence: ${msg}`);
+  process.exit(2);
 }
 
 function parseSplitHeightsArg(raw, profile) {
@@ -41,167 +50,173 @@ function parseSplitHeightsArg(raw, profile) {
   return heights;
 }
 
-function parseArgs(argv) {
-  const opts = {
-    input: null,
-    output: null,
-    printer: 'mk4',
-    colours: null,
-    splitAtRaw: null,
-    grid: 1.0,
-    margin: 0.5,
-    json: null,
-    help: false,
-  };
+function positiveNumber(name, raw, { integer = false, allowZero = false } = {}) {
+  const v = Number(raw);
+  const ok = Number.isFinite(v) && (allowZero ? v >= 0 : v > 0) && (!integer || Number.isInteger(v));
+  if (!ok) throw new Error(`Invalid --${name} value: ${raw}`);
+  return v;
+}
 
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === '-h' || arg === '--help') {
-      opts.help = true;
-    } else if (arg === '-o' || arg === '--output') {
-      if (i + 1 >= argv.length) throw new Error(`${arg} requires a file path`);
-      opts.output = argv[++i];
-    } else if (arg.startsWith('--output=')) {
-      opts.output = arg.slice('--output='.length);
-    } else if (arg === '--printer') {
-      if (i + 1 >= argv.length) throw new Error('--printer requires a value');
-      opts.printer = argv[++i];
-    } else if (arg.startsWith('--printer=')) {
-      opts.printer = arg.slice('--printer='.length);
-    } else if (arg === '--colours' || arg === '--colors') {
-      if (i + 1 >= argv.length) throw new Error(`${arg} requires a value`);
-      opts.colours = argv[++i];
-    } else if (arg.startsWith('--colours=')) {
-      opts.colours = arg.slice('--colours='.length);
-    } else if (arg.startsWith('--colors=')) {
-      opts.colours = arg.slice('--colors='.length);
-    } else if (arg === '--split-at') {
-      if (i + 1 >= argv.length) throw new Error('--split-at requires height(s) in mm');
-      opts.splitAtRaw = argv[++i];
-    } else if (arg.startsWith('--split-at=')) {
-      opts.splitAtRaw = arg.slice('--split-at='.length);
-    } else if (arg === '--grid') {
-      if (i + 1 >= argv.length) throw new Error('--grid requires a value');
-      opts.grid = Number(argv[++i]);
-    } else if (arg.startsWith('--grid=')) {
-      opts.grid = Number(arg.slice('--grid='.length));
-    } else if (arg === '--margin') {
-      if (i + 1 >= argv.length) throw new Error('--margin requires a value');
-      opts.margin = Number(argv[++i]);
-    } else if (arg.startsWith('--margin=')) {
-      opts.margin = Number(arg.slice('--margin='.length));
-    } else if (arg === '--json') {
-      if (i + 1 < argv.length && !argv[i + 1].startsWith('-')) {
-        opts.json = argv[++i];
-      } else {
-        opts.json = '-';
-      }
-    } else if (arg.startsWith('--json=')) {
-      opts.json = arg.slice('--json='.length) || '-';
-    } else if (arg.startsWith('-')) {
-      throw new Error(`Unknown option: ${arg}`);
-    } else if (!opts.input) {
-      opts.input = arg;
-    } else if (!opts.output) {
-      opts.output = arg;
-    } else {
-      throw new Error(`Unexpected positional argument: ${arg}`);
+function fmtTime(s) {
+  if (!Number.isFinite(s)) return '-';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.round(s % 60);
+  return h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m ${String(sec).padStart(2, '0')}s`;
+}
+
+function textReport(input, report) {
+  const out = [];
+  out.push(`gcode-sequence: ${input} (${report.printer})`);
+  if (!report.feasible) {
+    out.push(`INFEASIBLE: ${report.reason}`);
+    for (const d of report.diagnostics || []) {
+      out.push(`  - ${d.suggestion || JSON.stringify(d)}`);
     }
+    return out.join('\n');
   }
-
-  if (!Number.isFinite(opts.grid) || opts.grid <= 0) {
-    throw new Error(`Invalid --grid value: ${opts.grid}`);
+  const p = report.planner || {};
+  const how = p.method
+    ? ` (${p.method === 'astar' ? 'A*' : p.method}${p.changes_optimal ? ', fewest changes over the candidate heights' : ''}, ${p.states_explored} states)`
+    : '';
+  out.push(`Plan: ${report.steps.length} step(s), ${report.filament_changes} filament change(s), est. ${fmtTime(report.estimated_time_s)}${how}`);
+  const nameW = Math.max(6, ...report.steps.map(s => s.object.length));
+  out.push(`   #  ${'object'.padEnd(nameW)}  ${'Z from'.padStart(7)}  ${'Z to'.padStart(7)}  colour`);
+  let prev = null;
+  report.steps.forEach((s, i) => {
+    if (prev !== null && s.colour !== prev) out.push(`      -- M600: ${prev} -> ${s.colour}`);
+    prev = s.colour;
+    const zl = Number(s.z_lo).toFixed(2).padStart(7);
+    const zh = Number(s.z_hi).toFixed(2).padStart(7);
+    out.push(`  ${String(i + 1).padStart(2)}  ${s.object.padEnd(nameW)}  ${zl}  ${zh}  ${s.colour}`);
+  });
+  const c = report.comparison;
+  if (c) {
+    const seq = c.sequential_objects?.feasible
+      ? `${c.sequential_objects.filament_changes} change(s), ${fmtTime(c.sequential_objects.estimated_time_s)}`
+      : 'infeasible';
+    out.push('Compared with:');
+    out.push(`  file order          ${c.original_file.filament_changes} change(s), ${fmtTime(c.original_file.estimated_time_s)}`);
+    out.push(`  sequential objects  ${seq}`);
   }
-  if (!Number.isFinite(opts.margin) || opts.margin < 0) {
-    throw new Error(`Invalid --margin value: ${opts.margin}`);
-  }
-
-  return opts;
+  out.push(`Verified collision-free: ${report.verified ? 'yes' : 'NO'}`);
+  if (report.output) out.push(`Output: ${report.output}`);
+  return out.join('\n');
 }
 
-async function main() {
-  let opts;
-  try {
-    opts = parseArgs(process.argv.slice(2));
-  } catch (err) {
-    console.error(`gcode-sequence: ${err.message}`);
-    printUsage(process.stderr);
-    process.exit(2);
-  }
+let parsed;
+try {
+  parsed = parseArgs({
+    allowPositionals: true,
+    options: {
+      help: { type: 'boolean', short: 'h' },
+      output: { type: 'string', short: 'o' },
+      printer: { type: 'string', default: 'mk4' },
+      colours: { type: 'string' },
+      colors: { type: 'string' },
+      'split-at': { type: 'string' },
+      grid: { type: 'string', default: '1.0' },
+      margin: { type: 'string', default: '0.5' },
+      'max-candidates': { type: 'string' },
+      'max-states': { type: 'string' },
+      beam: { type: 'string' },
+      planner: { type: 'string', default: 'adaptive' },
+      json: { type: 'string' },
+    },
+  });
+} catch (err) {
+  console.error(`gcode-sequence: ${err.message}`);
+  process.stderr.write(USAGE);
+  process.exit(2);
+}
 
-  if (opts.help || !opts.input) {
-    printUsage(opts.help ? process.stdout : process.stderr);
-    process.exit(opts.help ? 0 : 2);
+const { values, positionals } = parsed;
+if (values.help) {
+  process.stdout.write(USAGE);
+  process.exit(0);
+}
+if (positionals.length < 1 || positionals.length > 2) {
+  process.stderr.write(USAGE);
+  process.exit(2);
+}
+const input = positionals[0];
+const output = values.output ?? positionals[1] ?? null;
+if (values.output && positionals[1]) fail('give the output either as -o PATH or as the second positional, not both');
+if (values.json && values.json !== '-') {
+  const same = (a, b) => a && b && path.resolve(a) === path.resolve(b);
+  if (same(values.json, input) || same(values.json, output)) {
+    fail(`--json ${values.json} would overwrite the ${same(values.json, input) ? 'input' : 'output'} file`);
   }
+}
 
-  if (!fs.existsSync(opts.input)) {
-    console.error(`gcode-sequence: Input file not found: ${opts.input}`);
-    process.exit(2);
-  }
+let profile;
+let options;
+try {
+  if (!fs.existsSync(input)) throw new Error(`Input file not found: ${input}`);
+  if (!['adaptive', 'fixed'].includes(values.planner)) throw new Error(`Invalid --planner value: ${values.planner}`);
+  profile = loadProfile(values.printer);
+  options = {
+    profile,
+    colours: values.colours ?? values.colors ?? null,
+    splitAt: parseSplitHeightsArg(values['split-at'], profile),
+    grid: positiveNumber('grid', values.grid),
+    margin: positiveNumber('margin', values.margin, { allowZero: true }),
+    planner: values.planner,
+  };
+  if (values['max-candidates'] !== undefined) options.maxCandidates = positiveNumber('max-candidates', values['max-candidates'], { integer: true });
+  if (values['max-states'] !== undefined) options.maxStates = positiveNumber('max-states', values['max-states'], { integer: true });
+  if (values.beam !== undefined) options.beam = positiveNumber('beam', values.beam, { integer: true });
+} catch (err) {
+  fail(err.message);
+}
 
-  let profile;
-  let splitAt;
-  try {
-    profile = loadProfile(opts.printer);
-    splitAt = parseSplitHeightsArg(opts.splitAtRaw, profile);
-  } catch (err) {
-    console.error(`gcode-sequence: ${err.message}`);
-    process.exit(2);
-  }
+let result;
+try {
+  result = sequenceToolpath(input, options);
+} catch (err) {
+  fail(err.message);
+}
 
-  let result;
-  try {
-    result = sequenceToolpath(opts.input, {
-      profile,
-      colours: opts.colours,
-      splitAt,
-      grid: opts.grid,
-      margin: opts.margin,
-    });
-  } catch (err) {
-    console.error(`gcode-sequence: ${err.message}`);
-    process.exit(2);
-  }
+for (const w of result.warnings || []) {
+  console.error(`gcode-sequence warning: ${w}`);
+}
 
-  for (const w of result.warnings || []) {
-    console.error(`gcode-sequence warning: ${w}`);
-  }
+if (result.feasible && output) {
+  fs.writeFileSync(output, result.gcode);
+}
 
-  if (result.feasible && opts.output) {
-    fs.writeFileSync(opts.output, result.gcode);
-  }
+const report = result.feasible
+  ? {
+      feasible: true,
+      verified: result.verified,
+      printer: result.printer,
+      warnings: result.warnings,
+      order: result.order,
+      filament_changes: result.filament_changes,
+      travel_distance_mm: result.travel_distance_mm,
+      estimated_time_s: result.estimated_time_s,
+      steps: result.steps,
+      chunks: result.chunks,
+      planner: result.planner,
+      comparison: result.comparison,
+      output,
+    }
+  : {
+      feasible: false,
+      printer: result.printer,
+      warnings: result.warnings,
+      reason: result.reason,
+      diagnostics: result.diagnostics,
+      planner: result.planner,
+      comparison: result.comparison,
+      chunks: result.chunks,
+    };
 
-  const report = result.feasible
-    ? {
-        feasible: true,
-        verified: result.verified,
-        printer: result.printer,
-        warnings: result.warnings,
-        order: result.order,
-        filament_changes: result.filament_changes,
-        travel_distance_mm: result.travel_distance_mm,
-        estimated_time_s: result.estimated_time_s,
-        chunks: result.chunks,
-        output: opts.output || null,
-      }
-    : {
-        feasible: false,
-        printer: result.printer,
-        warnings: result.warnings,
-        reason: result.reason,
-        diagnostics: result.diagnostics,
-        chunks: result.chunks,
-      };
-
-  const jsonStr = JSON.stringify(report, null, 2);
-  if (opts.json && opts.json !== '-') {
-    fs.writeFileSync(opts.json, jsonStr + '\n');
-  }
+const jsonStr = JSON.stringify(report, null, 2);
+if (values.json === '-') {
   console.log(jsonStr);
-  process.exitCode = result.feasible ? 0 : 1;
+} else {
+  if (values.json) fs.writeFileSync(values.json, jsonStr + '\n');
+  console.log(textReport(input, report));
 }
-
-main().catch((err) => {
-  console.error('gcode-sequence: ' + (err.stack || err.message));
-  process.exitCode = 2;
-});
+process.exitCode = result.feasible ? 0 : 1;

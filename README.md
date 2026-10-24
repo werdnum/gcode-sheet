@@ -219,23 +219,51 @@ const hits = checkMoves(profile, store, path.movesOf(objectB));
 
 ## Multicolour Sequential Planner (`gcode-sequence`)
 
-`gcode-sequence` takes a normal layer-interleaved multi-object G-code / `.bgcode` slice (sliced with PrusaSlicer's **Label objects** enabled) and a colour assignment per object, decomposes objects into whole objects or Z-height bands (`--split-at`), solves for the collision-free print order that minimizes `M600` filament changes and inter-chunk travel, emits a normalised (`G21`, `G90`, `M83`) G-code file preserving all non-motion printer state, and verifies the emitted G-code with `gcode-collide`.
+`gcode-sequence` takes a multi-object G-code / `.bgcode` slice (sliced with PrusaSlicer's **Label objects** enabled; layer-interleaved or "complete objects") and a colour per object, and plans the fastest collision-free way to print it on a single-extruder printer with `M600` colour changes. It minimises the number of filament changes first and the added travel second. It emits a normalised (`G21`, `G90`, `M83`) G-code file that keeps all non-motion printer state, and accepts the plan only if `gcode-collide` verifies the emitted file clean.
 
 ```bash
-node gcode-sequence.mjs plate.gcode -o sequenced.gcode --colours red,blue,red --split-at 20
+node gcode-sequence.mjs plate.gcode -o sequenced.gcode --colours red,blue,red
 # Or via Nix:
-nix run .#sequence -- plate.gcode -o sequenced.gcode --colours ObjA=red,ObjB=blue --split-at 20
+nix run .#sequence -- plate.gcode -o sequenced.gcode --colours ObjA=red,ObjB=blue --json report.json
+```
+
+How it plans:
+
+- Each object is a stack of layer slices. A **step** prints one object from its current height up to a higher candidate height in one colour. A step never crosses a colour boundary; boundaries come from the file's tool / `M600` state per layer, or from `--colours`.
+- **Candidate heights** per object (snapped to real layer tops, about a dozen at most): the top, every colour boundary, `--split-at` heights, the clearance ladder (multiples of the extruder/gantry clearance, 20 mm on the MK4), and each neighbour's heights ± that clearance, so a band can stop exactly where a neighbour's gantry conflict begins.
+- **Feasibility** of a step comes from the phase-1 checker only: its descent, layers and glue moves run through `checkMoves` against the deposits of every other object at its current height plus the object's own lower layers (decomposed per object, which is exact because deposits combine by per-cell maximum).
+- **Search:** A\* over (per-object height, loaded colour), with an admissible bound on the remaining colour changes. When the plate exceeds `--max-states`, it switches to a beam search, then to a depth-first search that finds a feasible plan whenever one exists over the candidates. If the emitted file fails verification, the planner retries with finer candidates and then with the fixed-split solver.
+
+The report (text on stdout, JSON with `--json`) lists the steps and compares the plan's filament changes and estimated time with the file's own order and with printing whole objects one after another. Example, two 36 mm cubes side by side (the gantry rules out printing either one whole first):
+
+```
+Plan: 3 step(s), 2 filament change(s), est. 12m 32s (A*, fewest changes over the candidate heights, 33 states)
+   #  object                          Z from     Z to  colour
+   1  fx_tall_left.stl id:0 copy 0      0.00    19.80  red
+      -- M600: red -> blue
+   2  fx_tall_right.stl id:1 copy 0     0.00    36.00  blue
+      -- M600: blue -> red
+   3  fx_tall_left.stl id:0 copy 0     19.80    36.00  red
+Compared with:
+  file order          239 change(s), 8h 06m
+  sequential objects  infeasible
+Verified collision-free: yes
 ```
 
 | Option | Default | Description |
 |---|---|---|
-| `-o`, `--output PATH` | *(none)* | Write the resequenced G-code to `PATH` |
+| `-o`, `--output PATH` | *(none)* | Write the resequenced G-code to `PATH` (or give it as the second positional) |
 | `--printer NAME\|PATH` | `mk4` | Built-in profile (`mk4`) or path to a custom JSON/YAML printer profile |
-| `--colours SPEC` | *(from tool)* | Colour per object (`c1,c2,...` by object index or `ObjA=c1,ObjB=c2`) |
-| `--split-at HEIGHTS` | *(none)* | Comma-separated Z split heights in mm (e.g. `20` or `clearance`) |
+| `--colours SPEC` | *(from tool / `M600`)* | Colour per object (`c1,c2,...` by object index or `ObjA=c1,ObjB=c2`) |
+| `--split-at HEIGHTS` | *(none)* | Extra candidate heights in mm (e.g. `20` or `clearance`) |
 | `--grid MM` | `1.0` | Deposited-material grid resolution in mm |
 | `--margin MM` | `0.5` | Horizontal safety margin in mm |
-| `--json [PATH]` | *(stdout)* | Also write the JSON sequencing report to `PATH` |
+| `--max-candidates N` | `12` | Candidate pause heights per object (mandatory ones are always kept) |
+| `--max-states N` | `200000` | A\* expansion budget before switching to beam search |
+| `--beam N` | `2000` | Beam width of the fallback search |
+| `--planner adaptive\|fixed` | `adaptive` | `fixed` = the earlier solver over chunks cut only at `--split-at` and colour boundaries |
+| `--json PATH` | *(none)* | Write the JSON report to `PATH`; `-` prints it to stdout instead of the text report |
+
+Non-object extrusion other than the first-layer skirt/brim (upper skirt layers, a short wipe tower) is not emitted; when the input has any, the report includes a warning.
 
 Exit status: `0` = feasible & verified collision-free, `1` = infeasible plate (prints conflict diagnostics), `2` = error.
-
