@@ -230,9 +230,10 @@ nix run .#sequence -- plate.gcode -o sequenced.gcode --colours ObjA=red,ObjB=blu
 How it plans:
 
 - Each object is a stack of layer slices. A **step** prints one object from its current height up to a higher candidate height in one colour. A step never crosses a colour boundary; boundaries come from the file's tool / `M600` state per layer, or from `--colours`.
+- **Colour regions:** an object whose parts use different filaments (say a raised inscription on extruder 2, with a tool change on every text layer) is split into one planning unit per colour. Each region's layers are rasterised on the deposit grid, and a layer that rests on another region's layer below may print only after that one (**support dependency**). So a white L with black text prints the whole L and then the text when the L's upright is out of the head's reach (1 change), or white, text, then the rest of the upright when it is close (2 changes). The checker decides which.
 - **Candidate heights** per object (snapped to real layer tops, about a dozen at most): the top, every colour boundary, `--split-at` heights, the clearance ladder (multiples of the extruder/gantry clearance, 20 mm on the MK4), and each neighbour's heights ± that clearance, so a band can stop exactly where a neighbour's gantry conflict begins.
 - **Feasibility** of a step comes from the phase-1 checker only: its descent, layers and glue moves run through `checkMoves` against the deposits of every other object at its current height plus the object's own lower layers (decomposed per object, which is exact because deposits combine by per-cell maximum).
-- **Clusters:** objects so close that neither may lead the other by a single layer (the checker decides, typically the nozzle body reaching the neighbour) are planned as one unit printed layer by layer. Each layer starts with the colour the previous one ended in, so a two-colour cluster costs one `M600` per layer, issued at the safe plane. The cluster is still banded against the rest of the plate.
+- **Clusters:** units with material side by side on the same layers, so close that neither may lead the other by a single layer (the checker decides, typically the nozzle body reaching the neighbour), are planned as one unit printed layer by layer. Vertically stacked regions are ordered by the support dependencies instead. Each layer starts with the colour the previous one ended in, so a two-colour cluster costs one `M600` per layer, issued at the safe plane. The cluster is still banded against the rest of the plate.
 - **Search:** A\* over (per-unit height, loaded colour), with an admissible bound on the remaining colour changes. When the plate exceeds `--max-states`, it switches to a beam search, then to a depth-first search for any feasible plan within its node budget. If the emitted file fails verification, the planner retries with finer candidates, then falls back to the fixed-split solver; the report names the planner that produced the plan.
 
 The report (text on stdout, JSON with `--json`) lists the steps and compares the plan's filament changes and estimated time with the file's own order and with printing whole objects one after another. That last baseline is judged by the feasibility tables only and is marked as not verified. Example, two 36 mm cubes side by side (the gantry rules out printing either one whole first):
@@ -257,14 +258,14 @@ From JavaScript: `import { sequenceToolpath } from './lib/plan.mjs'` (`lib/seque
 |---|---|---|
 | `-o`, `--output PATH` | *(none)* | Write the resequenced G-code to `PATH` (or give it as the second positional) |
 | `--printer NAME\|PATH` | `mk4` | Built-in profile (`mk4`) or path to a custom JSON/YAML printer profile |
-| `--colours SPEC` | *(from tool / `M600`)* | Colour per object (`c1,c2,...` by object index or `ObjA=c1,ObjB=c2`) |
+| `--colours SPEC` | *(from tool / `M600`)* | Colour per object (`c1,c2,...` by object index or `ObjA=c1,ObjB=c2`); an entry colours the whole object, so it is refused for an object the file itself changes tool/colour on (leave such objects out to use the file's colours) |
 | `--split-at HEIGHTS` | *(none)* | Extra candidate heights in mm (e.g. `20` or `clearance`) |
 | `--grid MM` | `1.0` | Deposited-material grid resolution in mm |
 | `--margin MM` | `0.5` | Horizontal safety margin in mm |
 | `--max-candidates N` | `12` | Candidate pause heights per object (mandatory ones are always kept) |
 | `--max-states N` | `200000` | A\* expansion budget before switching to beam search |
 | `--beam N` | `2000` | Beam width of the fallback search |
-| `--planner adaptive\|fixed` | `adaptive` | `fixed` = the earlier solver over chunks cut only at `--split-at` and colour boundaries |
+| `--planner adaptive\|fixed` | `adaptive` | `fixed` = the earlier solver over chunks cut only at `--split-at` and colour boundaries (needs one colour per object layer) |
 | `--json PATH` | *(none)* | Write the JSON report to `PATH`; `-` prints it to stdout instead of the text report |
 
 Non-object extrusion other than the first-layer skirt/brim (upper skirt layers, a short wipe tower) is not emitted; when the input has any, the report includes a warning.
