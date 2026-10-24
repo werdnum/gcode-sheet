@@ -281,4 +281,10 @@ test('M486: an unnamed object gets a generated name; the first name seen for an 
   const conflicting = loadToolpath([info, 'G90', 'M83', 'M486 S0', 'M486 AOther', 'M486 S-1', ...layer('M486 S0')].join('\n'), { isText: true });
   assert.deepEqual(conflicting.objects.filter(o => o.moveCount > 0).map(o => o.name), ['Cube']);
   assert.ok(!conflicting.objects.some(o => o.name === 'Other'));
+
+  // A real name arriving after the placeholder was assigned replaces it (only placeholders are
+  // replaceable): the moves after it, and every later block of that id, use the real name.
+  const late = loadToolpath(['G90', 'M83', 'M486 S0', 'G1 X10 Y10 Z0.2', 'M486 ACube', 'G1 X20 Y10 E1 F1800', 'M486 S-1',
+    ...layer('M486 S0').slice(0, -1), 'M486 AOther', 'G1 X30 Y10 E1', 'M486 S-1'].join('\n'), { isText: true });
+  assert.deepEqual(late.objects.filter(o => o.moveCount > 0).map(o => o.name), ['Cube']);
 });

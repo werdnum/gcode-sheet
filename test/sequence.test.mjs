@@ -492,6 +492,10 @@ test('gcode-sequence CLI: exit codes 0, 1, 2, output G-code verification, and --
   // through): the sequentially sliced tall side-by-side cubes with one candidate height.
   const infRes = runSequenceCli([fileURLToPath(new URL('./fixtures/seq-tall-sbs.gcode', import.meta.url)), '--colours', 'red,blue', '--max-candidates', '1']);
   assert.equal(infRes.status, 1);
+  // The infeasible result still says which objects (if any) were forced layer by layer.
+  const inf = sequenceToolpath(fileURLToPath(new URL('./fixtures/seq-tall-sbs.gcode', import.meta.url)), { colours: 'red,blue', maxCandidates: 1 });
+  assert.equal(inf.feasible, false);
+  assert.deepEqual(inf.clusters, []);
 
   fs.writeFileSync(unlabelledIn, 'G90\nM83\nG1 X10 Y10 Z0.2 E1\n');
   const errRes = runSequenceCli([unlabelledIn]);
@@ -1340,6 +1344,25 @@ test('MMU files: the first chunk gets its tool select, changes are T<n>, and the
   assert.ok(m600Body.indexOf('M600') < m600Body.indexOf('; printing object A'), 'M600 before the first chunk');
   assert.equal(m600Res.change_cost.source, 'profile change_cost_s, M600');
 
+  // The fixed solver starts from the loaded colour too: with T1 loaded, A (T1) goes first and
+  // the plate needs 1 change, not 2 (its DP used to ignore the start colour).
+  const short = [
+    { name: 'A', parts: [{ x0: 50, y0: 95, x1: 60, y1: 105, z0: 0, z1: 4, tool: 1 }] },
+    { name: 'B', parts: [{ x0: 150, y0: 95, x1: 160, y1: 105, z0: 0, z1: 4, tool: 0 }] },
+  ];
+  for (const [pre, first] of [['T1', 'A'], ['T0', 'B']]) {
+    const fixed = sequenceToolpath(buildPartsPlate(short, { layerHeight: 1, preamble: [pre] }), { planner: 'fixed' });
+    assert.equal(fixed.pass_through, false);
+    assert.equal(fixed.filament_changes, 1, `fixed solver from ${pre}`);
+    assert.equal(fixed.steps[0].object, first);
+  }
+
+  // A zero unload + load total in the footer is PrusaSlicer's "not set": the 30 s fallback.
+  const zeroFooter = ['; filament_load_time = 0,0,0', '; filament_unload_time = 0,0,0'];
+  const zero = sequenceToolpath(buildPartsPlate(objs, { layerHeight: 2, toolCmd: 'T', preamble: ['T2'], footer: zeroFooter }));
+  assert.equal(zero.change_cost.change_cost_s, 30);
+  assert.match(zero.change_cost.source, /30 s; the file's filament_unload_time \+ filament_load_time is 0/);
+
   // A T0 in a markerless preamble with one tool in use is not an MMU file.
   const markerless = ['T0', 'G90', 'M83', '; printing object A', 'G0 X10 Y10 Z0.2', 'G1 X20 Y10 Z0.2 E1 F1800', '; stop printing object A'].join('\n');
   assert.equal(extractSlices(loadToolpath(markerless), {}).colourChangeBy, 'M600');
@@ -1349,6 +1372,15 @@ test('Pass-through details: zero-change files are only checked, text vs path inp
   // Zero colour changes: no planning at all.
   const one = sequenceToolpath(fixture('seq-short-sbs.gcode'));
   assert.equal(one.pass_through, true);
+  // The slicer's own estimate (`; estimated printing time (normal mode) = 4m 45s`) is reported.
+  assert.equal(one.slicer_estimate_s, 285);
+  assert.equal(one.comparison.original_file.slicer_estimate_s, 285);
+  const keepCli = runSequenceCli([fixture('seq-short-sbs.gcode')]);
+  assert.match(keepCli.stdout, /No improvement: .*est\. 4m 45s by the slicer/);
+  assert.match(keepCli.stdout, /Slicer estimate: 4m 45s; nominal-feedrate estimate: /);
+  const planCli = runSequenceCli([fixture('interleaved-tall-sbs.gcode'), '--colours', 'red,blue']);
+  assert.match(planCli.stdout, /est\. \S+ \S* ?at nominal feedrate/);
+  assert.match(planCli.stdout, /Slicer estimate: 13m 03s for the file as sliced/);
   assert.match(one.planner.reason, /no colour changes/);
   assert.equal(one.planner.considered, undefined);
 
@@ -1372,6 +1404,11 @@ test('Pass-through details: zero-change files are only checked, text vs path inp
   fs.writeFileSync(inPath, latin1);
   const viaPath = sequenceToolpath(inPath);
   assert.deepEqual([viaPath.pass_through, viaPath.gcode, viaPath.source_path], [true, null, inPath]);
+  // A parsed toolpath passes through by the file it was read from; one parsed from text has neither.
+  const viaToolpath = sequenceToolpath(loadToolpath(inPath));
+  assert.deepEqual([viaToolpath.pass_through, viaToolpath.gcode, viaToolpath.source_path], [true, null, inPath]);
+  const fromText = sequenceToolpath(loadToolpath(text, { isText: true }));
+  assert.deepEqual([fromText.pass_through, fromText.gcode, fromText.source_path], [true, null, null]);
 
   // CLI: a byte copy (a Latin-1 byte survives), and the report describes the kept file.
   const cli = runSequenceCli([inPath, '-o', outPath, '--json', jsonPath]);

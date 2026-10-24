@@ -88,16 +88,22 @@ function textReport(input, report) {
     return out.join('\n');
   }
   if (report.pass_through) {
-    out.push(`No improvement: keeping the file's own order (${report.filament_changes} filament change(s), est. ${fmtTime(report.estimated_time_s)}); ${report.planner.reason}.`);
+    // The kept file is exactly what the slicer estimated, so its estimate is the headline.
+    const est = report.slicer_estimate_s != null
+      ? `est. ${fmtTime(report.slicer_estimate_s)} by the slicer`
+      : `est. ${fmtTime(report.estimated_time_s)} at nominal feedrate`;
+    out.push(`No improvement: keeping the file's own order (${report.filament_changes} filament change(s), ${est}); ${report.planner.reason}.`);
+    if (report.slicer_estimate_s != null) out.push(`Slicer estimate: ${fmtTime(report.slicer_estimate_s)}; nominal-feedrate estimate: ${fmtTime(report.estimated_time_s)} (no acceleration, no wipe tower)`);
     out.push(`Colour change cost: ${report.change_cost.change_cost_s} s (${report.change_cost.source})`);
     for (const c of report.planner.considered?.clusters || []) {
-      out.push(`Considered plan printed layer by layer (too close to print apart): ${c.objects.join(' + ')}`);
+      out.push(`Planner had to print layer by layer (too close to print apart): ${c.objects.join(' + ')}`);
     }
     out.push(`Verified collision-free: ${report.verified ? 'yes' : 'NO'}`);
     if (report.output) out.push(`Output: ${report.output} (a copy of the input)`);
     return out.join('\n');
   }
-  out.push(`Plan: ${report.steps.length} step(s), ${report.filament_changes} filament change(s), est. ${fmtTime(report.estimated_time_s)}${plannerLine(report.planner)}`);
+  out.push(`Plan: ${report.steps.length} step(s), ${report.filament_changes} filament change(s), est. ${fmtTime(report.estimated_time_s)} at nominal feedrate${plannerLine(report.planner)}`);
+  if (report.slicer_estimate_s != null) out.push(`Slicer estimate: ${fmtTime(report.slicer_estimate_s)} for the file as sliced (its own order; the nominal-feedrate estimates here ignore acceleration and the wipe tower)`);
   out.push(`Colour change cost: ${report.change_cost.change_cost_s} s (${report.change_cost.source})`);
   const nameW = Math.max(6, ...report.steps.map(s => s.object.length));
   out.push(`   #  ${'object'.padEnd(nameW)}  ${'Z from'.padStart(7)}  ${'Z to'.padStart(7)}  colour`);
@@ -225,6 +231,7 @@ const report = result.feasible
       filament_changes: result.filament_changes,
       travel_distance_mm: result.travel_distance_mm,
       estimated_time_s: result.estimated_time_s,
+      slicer_estimate_s: result.slicer_estimate_s ?? null,
       change_cost: result.change_cost,
       pass_through: result.pass_through || false,
       steps: result.steps,

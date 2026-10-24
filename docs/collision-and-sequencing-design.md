@@ -84,8 +84,10 @@ heater block + sock (z 5–13), the MK4 print-fan duct left/front of the nozzle
 (x −30…12, y −22…12, z 4–13, deliberately generous), the extruder body
 (r 45 from 13 mm, PrusaSlicer) and the gantry (from 20 mm, after forum
 reports of "a bit over 20 mm" from tip to X rods). Parts carry a `note` with
-their source. The planner's candidate heights now use every part's starting
-height (4, 5, 13, 20 mm) rather than one clearance value. Tests that assert
+their source. The planner's candidate heights now use the starting height of
+every part that can reach a given neighbour (4, 5, 13, 20 mm) rather than one
+clearance value, and the clearance height is the lowest start of a part
+reaching at least 30 mm all round (13 mm on the MK4). Tests that assert
 exact plans run on a frozen copy of the original geometry
 (`test/profiles/mk4-legacy-20mm.json`); the property tests run on the real
 profile. README "Measuring your printer" lists what to measure.
