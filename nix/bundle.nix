@@ -32,7 +32,7 @@ runCommand "gcode-sheet-bundle-${gcode-sheet.version}" {
   cp -L ${nodejs}/bin/node ${libbgcode}/bin/bgcode $out/libexec/
   cp -rL ${app} $out/app
   chmod -R u+w $out
-  sed -i 1d $out/app/gcode-sheet.mjs # the /nix/store node shebang
+  sed -i 1d $out/app/gcode-sheet.mjs $out/app/gcode-collide.mjs $out/app/gcode-sequence.mjs # the /nix/store node shebang
 
   for f in $out/lib/* $out/libexec/* $(find $out/app -name '*.node'); do
     [ "$(basename "$f")" = ${loader} ] || patchelf --remove-rpath "$f"
@@ -54,5 +54,11 @@ runCommand "gcode-sheet-bundle-${gcode-sheet.version}" {
   launcher gcode-sheet 'export __EGL_VENDOR_LIBRARY_FILENAMES="$d/share/50_mesa.json" BGCODE_BIN="$d/bgcode"
   unset NODE_OPTIONS
   exec "$d/lib/${loader}" --library-path "$d/lib" "$d/libexec/node" "$d/app/gcode-sheet.mjs" "$@"'
+  launcher gcode-collide 'export __EGL_VENDOR_LIBRARY_FILENAMES="$d/share/50_mesa.json" BGCODE_BIN="$d/bgcode" GCODE_SHEET_BIN="$d/gcode-sheet"
+  unset NODE_OPTIONS
+  exec "$d/lib/${loader}" --library-path "$d/lib" "$d/libexec/node" "$d/app/gcode-collide.mjs" "$@"'
+  launcher gcode-sequence 'export __EGL_VENDOR_LIBRARY_FILENAMES="$d/share/50_mesa.json" BGCODE_BIN="$d/bgcode"
+  unset NODE_OPTIONS
+  exec "$d/lib/${loader}" --library-path "$d/lib" "$d/libexec/node" "$d/app/gcode-sequence.mjs" "$@"'
   launcher bgcode 'exec "$d/lib/${loader}" --library-path "$d/lib" "$d/libexec/bgcode" "$@"'
 ''

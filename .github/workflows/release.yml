@@ -12,6 +12,10 @@ on:
       - flake.lock
       - nix/**
       - gcode-sheet.mjs
+      - gcode-collide.mjs
+      - gcode-sequence.mjs
+      - lib/**
+      - profiles/**
       - package.json
       - package-lock.json
       - .github/workflows/release.yml

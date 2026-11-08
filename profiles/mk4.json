@@ -1,0 +1,69 @@
+{
+  "name": "Prusa MK4",
+  "bed": {
+    "x": [0, 250],
+    "y": [0, 210],
+    "z_max": 220
+  },
+  "parts": [
+    {
+      "id": "nozzle_cone",
+      "shape": "cylinder",
+      "r": 2.5,
+      "z": [0, 2.5],
+      "measured": true,
+      "note": "Nozzle tip cone below the 7 mm hex (E3D Prusa Nextruder nozzle drawing); radius taken conservatively."
+    },
+    {
+      "id": "nozzle_hex",
+      "shape": "cylinder",
+      "r": 4.5,
+      "z": [2.5, 5],
+      "measured": true,
+      "note": "7 mm hex nut (circumradius ~4.04 mm) about 2.5 mm above the tip (E3D drawing)."
+    },
+    {
+      "id": "heater_block",
+      "shape": "box",
+      "x": [-12, 12],
+      "y": [-12, 12],
+      "z": [5, 13],
+      "measured": false,
+      "note": "Placeholder for heater block + silicone sock; measure tip to block bottom and the block's extents."
+    },
+    {
+      "id": "fan_shroud",
+      "shape": "box",
+      "x": [-30, 12],
+      "y": [-22, 12],
+      "z": [4, 13],
+      "measured": false,
+      "note": "Placeholder for the MK4 print-fan duct (left/front of the nozzle), deliberately generous; measure its lowest edge and extents."
+    },
+    {
+      "id": "extruder",
+      "shape": "cylinder",
+      "r": 45,
+      "z": [13, 200],
+      "measured": false,
+      "note": "PrusaSlicer [printer:*commonMK4*] extruder_clearance_radius = 45, extruder_clearance_height = 13."
+    },
+    {
+      "id": "gantry",
+      "shape": "box",
+      "x": [-1000, 1000],
+      "y": [-30, 45],
+      "z": [20, 400],
+      "measured": false,
+      "note": "X-axis rods/carriage: forum measurement 'a bit over 20 mm' tip to rods; the Y extents are a guess."
+    }
+  ],
+  "park": {
+    "m600": {
+      "x": 0,
+      "y": 210,
+      "z_lift": 0
+    }
+  },
+  "change_cost_s": 120
+}

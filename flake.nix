@@ -39,12 +39,17 @@
             src = pkgs.lib.cleanSourceWith {
               src = ./.;
               filter = path: type:
-                let base = baseNameOf (toString path);
-                in builtins.elem base [
+                let
+                  rel = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
+                in builtins.elem rel [
                   "package.json"
                   "package-lock.json"
                   "gcode-sheet.mjs"
-                ];
+                  "gcode-collide.mjs"
+                  "gcode-sequence.mjs"
+                  "lib"
+                  "profiles"
+                ] || pkgs.lib.hasPrefix "lib/" rel || pkgs.lib.hasPrefix "profiles/" rel;
             };
 
             nodejs = pkgs.nodejs_24;
@@ -69,19 +74,23 @@
               rm -rf "$addonDir"
               mkdir -p "$addonDir"
               tar -xzf "${glesTarball}" --no-same-owner -C "$addonDir"
-              chmod +x "$out/lib/node_modules/gcode-sheet/gcode-sheet.mjs"
-              sed -i '1c#!${runtime}/bin/${runtimeBin}' "$out/lib/node_modules/gcode-sheet/gcode-sheet.mjs"
+              for script in gcode-sheet.mjs gcode-collide.mjs gcode-sequence.mjs; do
+                chmod +x "$out/lib/node_modules/gcode-sheet/$script"
+                sed -i '1c#!${runtime}/bin/${runtimeBin}' "$out/lib/node_modules/gcode-sheet/$script"
+              done
 
-              wrapProgram "$out/bin/gcode-sheet" \
-                --prefix PATH : "${pkgs.lib.makeBinPath [ pkgs.libbgcode ]}" \
-                --set BGCODE_BIN "${pkgs.libbgcode}/bin/bgcode" \
-                --set LD_LIBRARY_PATH "${pkgs.lib.makeLibraryPath runtimeLibs}" \
-                --set __EGL_VENDOR_LIBRARY_FILENAMES "${pkgs.mesa}/share/glvnd/egl_vendor.d/50_mesa.json" \
-                --set EGL_PLATFORM "surfaceless" \
-                --set LIBGL_ALWAYS_SOFTWARE "1" \
-                --set GALLIUM_DRIVER "llvmpipe" \
-                --set-default LP_NUM_THREADS "4" \
-                --unset NODE_OPTIONS
+              for bin in gcode-sheet gcode-collide gcode-sequence; do
+                wrapProgram "$out/bin/$bin" \
+                  --prefix PATH : "${pkgs.lib.makeBinPath [ pkgs.libbgcode ]}" \
+                  --set BGCODE_BIN "${pkgs.libbgcode}/bin/bgcode" \
+                  --set LD_LIBRARY_PATH "${pkgs.lib.makeLibraryPath runtimeLibs}" \
+                  --set __EGL_VENDOR_LIBRARY_FILENAMES "${pkgs.mesa}/share/glvnd/egl_vendor.d/50_mesa.json" \
+                  --set EGL_PLATFORM "surfaceless" \
+                  --set LIBGL_ALWAYS_SOFTWARE "1" \
+                  --set GALLIUM_DRIVER "llvmpipe" \
+                  --set-default LP_NUM_THREADS "4" \
+                  --unset NODE_OPTIONS
+              done
             '';
 
             meta = with pkgs.lib; {
@@ -124,6 +133,16 @@
           program = "${self.packages.${system}.bun}/bin/gcode-sheet";
           meta.description = "G-code contact-sheet renderer using Bun";
         };
+        collide = {
+          type = "app";
+          program = "${self.packages.${system}.default}/bin/gcode-collide";
+          meta.description = "3D-printer print-head collision checker";
+        };
+        sequence = {
+          type = "app";
+          program = "${self.packages.${system}.default}/bin/gcode-sequence";
+          meta.description = "Multicolour sequential G-code chunk planner and emitter";
+        };
       });
 
       checks = forAllSystems (system:
@@ -131,11 +150,20 @@
           pkgs = import nixpkgs { inherit system; };
           fixture = ./caliper-battery-cover-flatbase-0.1mm-black-pla-slot3.bgcode;
           checkPackage = gcode-sheet: pkgs.runCommand "gcode-sheet-check" {
-            nativeBuildInputs = [ gcode-sheet pkgs.nodejs_24 ];
+            nativeBuildInputs = [ gcode-sheet pkgs.nodejs_24 pkgs.libbgcode ];
           } ''
             export HOME="$TMPDIR"
+            export BGCODE_BIN="${pkgs.libbgcode}/bin/bgcode"
+            mkdir -p "$TMPDIR/suite"
+            ln -s "${gcode-sheet}/lib/node_modules/gcode-sheet/lib" "$TMPDIR/suite/lib"
+            ln -s "${gcode-sheet}/lib/node_modules/gcode-sheet/profiles" "$TMPDIR/suite/profiles"
+            ln -s "${gcode-sheet}/lib/node_modules/gcode-sheet/node_modules" "$TMPDIR/suite/node_modules"
+            ln -s "${fixture}" "$TMPDIR/suite/caliper-battery-cover-flatbase-0.1mm-black-pla-slot3.bgcode"
+            cp -r ${./test} "$TMPDIR/suite/test"
             GCODE_SHEET_BIN="${gcode-sheet}/bin/gcode-sheet" \
-              node --test ${./test/parser.test.mjs}
+            GCODE_COLLIDE_BIN="${gcode-sheet}/bin/gcode-collide" \
+            GCODE_SEQUENCE_BIN="${gcode-sheet}/bin/gcode-sequence" \
+              node --test "$TMPDIR/suite/test/parser.test.mjs" "$TMPDIR/suite/test/collide.test.mjs" "$TMPDIR/suite/test/sequence.test.mjs"
             gcode-sheet "${fixture}" "$TMPDIR/caliper.png" > "$TMPDIR/summary.json"
             gcode-sheet "${fixture}" "$TMPDIR/caliper-feature.png" --color-by feature > "$TMPDIR/feature-summary.json"
             cat "$TMPDIR/summary.json"
